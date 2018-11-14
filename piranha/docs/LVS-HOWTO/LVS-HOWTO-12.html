@@ -1,0 +1,872 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO: VS-DR</TITLE>
+ <LINK HREF="LVS-HOWTO-13.html" REL=next>
+ <LINK HREF="LVS-HOWTO-11.html" REL=previous>
+ <LINK HREF="LVS-HOWTO.html#toc12" REL=contents>
+</HEAD>
+<BODY>
+<A HREF="LVS-HOWTO-13.html">Next</A>
+<A HREF="LVS-HOWTO-11.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc12">Contents</A>
+<HR>
+<H2><A NAME="VS-DR"></A> <A NAME="s12">12. VS-DR</A></H2>
+
+<P>
+<P>VS-DR is based on IBM's NetDispatcher. The NetDispatcher sits in
+front of a set of webservers, which appear as one webserver to
+the clients. The NetDispatcher served http for the Atlanta and the Sydney
+Olympic games and for the chess match between Kasparov and Deep
+Blue.
+<P>Here's an example set of IPs for a VS-DR setup. Note that in this
+example the RIPs are on the same network as the VIP. If the RIPs
+were on a different network (eg 192.168.2.0/24) to the VIP &amp;&amp;
+the router (here the client) was not allowed to route to RIP
+network (ie the real-servers do not receive the arp requests from
+the router asking "who has VIP tell router"), then the arp
+problem is solved without requiring a patch on the director's
+kernel. In this example, for (my) convenience, the servers are
+on the same network as the client and you have to handle the arp
+problem (I used the arp -f /etc/ethers approach).
+<P>
+<PRE>
+Host                         IP
+client                       CIP=192.168.1.254
+director                     DIP=192.168.1.1
+virtual IP (VIP)             VIP=192.168.1.110 (arpable, IP clients connect to)
+real-server1                 RIP1=192.168.1.2, VIP=192.168.1.110 (lo:0, not arpable)
+real-server2                 RIP2=192.168.1.3, VIP=192.168.1.110 (lo:0, not arpable)
+real-server3                 RIP3=192.168.1.4, VIP=192.168.1.110 (lo:0, not arpable)
+.
+.
+real-server-n                 192.168.1.n+1
+</PRE>
+<P>
+<PRE>
+#lvs_dr.conf 
+LVS_TYPE=VS_DR
+INITIAL_STATE=on
+VIP=eth0:110 lvs 255.255.255.255 192.168.1.110
+DIRECTOR_INSIDEIP=eth0 directorinside 192.168.1.0 255.255.255.0 192.168.1.255
+DIRECTOR_DEFAULT_GW=client
+SERVICE=t telnet rr real-server1 real-server2 real-server3
+SERVER_VIP_DEVICE=lo:0
+SERVER_NET_DEVICE=eth0
+SERVER_DEFAULT_GW=client
+#----------end lvs_dr.conf------------------------------------
+</PRE>
+<P>
+<PRE>
+                        ________
+                       |        |
+                       | client |
+                       |________|
+                       CIP=192.168.1.254
+                           |
+                        (router)
+                           |
+             __________    |
+            |          |   |    VIP=192.168.1.110 (eth0:1, arps)
+            | director |---     DIP=192.168.1.1 (eth0)
+            |__________|   |
+                           |
+                           |
+          -------------------------------------
+          |                |                  |
+          |                |                  |
+   RIP1=192.168.1.2  RIP2=192.168.1.3   RIP3=192.168.1.4 (eth0)
+   VIP=192.168.1.110 VIP=192.168.1.110 VIP=192.168.1.110 (all lo:0, non-arping)
+   _____________     _____________      _____________
+  |             |   |             |    |             |
+  | real-server |   | real-server |    | real-server |
+  |_____________|   |_____________|    |_____________|
+          |                |                  |
+      (router)          (router)           (router)
+          |                |                  |
+          ----------------------------------------------> to client 
+                                                          (or router 
+                                                           in front of
+                                                           director)
+</PRE>
+<P>Here's the lvs_dr.conf file
+<P>
+<PRE>
+#--------------------lvs_dr.conf 
+LVS_TYPE=VS_DR
+INITIAL_STATE=on
+
+#director setup 
+VIP=eth0:12 192.168.1.110 255.255.255.255 192.168.1.110
+DIRECTOR_INSIDEIP=eth0 192.168.1.10 192.168.1.0 255.255.255.0 192.168.1.255
+#service setup, one service at a time 
+SERVICE=t telnet rr 192.168.1.1 192.168.1.8 127.0.0.1 
+
+#real-server setup
+SERVER_LVS_DEVICE=lo0:1
+SERVER_NET_DEVICE=eth0
+
+#----------end lvs_dr.conf------------------------------------
+</PRE>
+<P>Direct routing setup and testing is the same as VS-Tun except
+that all machines within the VS-DR LVS (ie the director and
+real-servers) must be able to arp each other. This means that they
+have to be on the same network without any forwarding devices
+between them. This means that they are using the same piece of 
+transport layer hardware ("wire"), eg RJ-45, coax, fibre. There
+can be hub(s) or switch(es) in this mix. Communication
+within the LVS is by link-layer, using MAC addresses rather than
+IP's. All machines in the LVS have the VIP, only the VIP on the
+director replies to arp requests, the VIP on the real-servers
+must be on a non-arping device (eg lo:0, dummy).
+<P>The restrictions for VS-DR are
+<P>
+<UL>
+<LI>The client must be able to connect to the VIP on the director
+</LI>
+<LI>Real-servers and the director must be on the same piece of wire
+(they must be able to arp each other) as packets are sent by
+link-layer from the director to the real-servers.
+</LI>
+<LI>The route from the real-servers to the client _cannot_ go
+through the director, i.e. the director cannot be the default
+gw for the real-servers. (Note: the client does not need to
+connect to the the real-servers for the LVS to function. The
+real-servers could be behind a firewall, but the real-servers
+must be able to send packets to the client). The return packets,
+from the real-servers to the client, go directly from the
+real-servers to the client and _do_not_ go back through the
+director. For high throughput, each real-server can have its own
+router/connection to the client/internet and return packets need
+not go through the router feeding the director. (for more info
+see e-mail postings about VS-DR topologies in the section
+<A HREF="LVS-HOWTO-3.html#topology">More on the arp problem and topologies of VS-DR and VS-Tun LVS's</A>). To allow the director to be the default gw for the
+real-servers (e.g. when the director is the firewall), see
+<A HREF="#martian">Julian's martian modification</A>.</LI>
+</UL>
+<P>Note for VS-DR (and VS-Tun), the services on the real-servers
+are listening to the VIP. You can have the service listening
+to the RIP as well, but the LVS needs the service to be
+listening to the VIP. This is not an issue with services
+like telnet which listen to all local IPs (ie 0.0.0.0), but httpd is set
+up to listen to only the IPs that you tell it.
+<P>Normally for VS-DR, the client is on a different network to the
+director/server(s), and each real-server has its own route to the
+outside world. In the simple test case below, where all machines
+are on the 192.168.1.0 network, no routers are required, and the
+return packets, instead of going out (the router(s)) at the bottom
+of the diagram, would return to the client via the network device
+on 192.168.1.0 (presumably eth0).
+<P>
+<H2><A NAME="ss12.1">12.1 How VS-DR works</A>
+</H2>
+
+<P>
+<P>Here's part of the rc.lvs_dr script which configures the real-server
+with RIP=192.168.1.8
+<P>
+<PRE>
+     #setup servers for telnet, VS-DR
+     /sbin/ipvsadm -A -t 192.168.1.110:23 -s rr
+     echo "adding service 23 to real-server 192.168.1.6 "
+     /sbin/ipvsadm -a -t 192.168.1.110:23 -R 192.168.1.6 -g -w 1
+</PRE>
+<P>With VS-DR, the target port numbers of incoming packets cannot be
+remapped (unlike VS-NAT). A request to port 23 (telnet) on the VIP 
+will be forwarded to port 23 on a real-server, thus the RIP entry has 
+no accompanying port.
+<P>Here's the packet headers as the request is processed by the LVS.
+<P>
+<PRE>
+packet                  source        dest         data
+1. request from client  CIP:3456      VIP:23       -
+2. ipvsadm table:
+   director chooses server=RIP1, creates link-layer packet
+                        MAC of DIP    MAC of RIP1  IP datagram
+                                                   source=CIP:3456,
+                                                   dest=VIP:23,
+                                                   data= -
+3. real-server recovers IP datagram
+                        CIP:3456      VIP:23       -
+4. real-server looks up routing table, finds VIP is local,
+   processes request locally, generates reply
+                        VIP:23        CIP:3456     "login:"
+
+5. packet leaves real-server via its default gw, not via DIP.
+</PRE>
+<P>For the verbally oriented...
+<P>A packet arrives from the client for the VIP (CIP:3456->VIP:23). 
+The director looks up its tables and decides to send the connection 
+to real-server_1. The director arps for the MAC address of RIP1 and 
+sends a link-layer packet to that MAC containing an IP datagram with 
+CIP:3456->VIP:23. This is the same src:dst as the incoming packet
+and the tcpip layer see this as a forwarded packet. To allow this
+packet to be sent to the real-server, it is not neccessary for
+forwarding must be on in the
+director (it is off by default in 2.2.x, 2.4.x kernels, this is handled by
+the configure script).
+<P>The packet arrives at real-server_1. The real-server
+recovers the IP datagram, looks up its routing table, finds that
+the VIP (on an otherwise unused, non-arping and nonfunctional
+device) is local.
+<P>I'm not sure what exactly happens next, but I believe the Linux 
+tcpip stack then delivers the packet to the socket listeners, 
+rather than to the device with the VIP, 
+but I'm out of my depth now.
+<P>The real-server now has a packet CIP:3456->VIP:23,
+processes it locally, constructs a reply, VIP:23->CIP:3456. 
+The real-server looks up its routing table and
+sends the reply out its default gw to the internet (or client). The
+reply does not go through the director.
+<P>The role of VS-DR is to allow the director to deliver a packet
+with dst=VIP (the only arp'ing VIP being on the
+director), not to itself, but to some machine that (as far as the
+director knows) doesn't have the VIP address at all. The only
+difference between VS-DR and VS-Tun is that instead of putting
+the IP datagram inside a link-layer packet with dst=MAC
+of the RIP, for VS-Tun the IPdatagram from the client CIP->VIP 
+is put inside another IPdatagram DIP->RIP.
+<P>The use of the non-arping lo:0 and tunl0 to hold the VIP for 
+VS-DR and VS-Tun (respectively) is to
+allow the real-server's routing table to have an entry for a local
+device with IP=VIP _AND_ that so that other machines can't see
+this IP (ie it doesn't reply to arp requests). There is nothing
+particularly loopback about the lo:0 device that is required to
+make VS-DR work anymore than there is anything tunnelling about a
+tunl0 device. For 2.0.x kernels, a tunnel packet is de-capsulated 
+because it is marked type=IPIP, and will be decapsulated if delivered 
+to an lo device just as well as if delivered to a tunl device.
+The 2.2.x kernels are more particular and need a tunl device (see
+"Properties of devices for VIP").
+<P>
+<H2><A NAME="ss12.2">12.2 Handling the arp problem for VS-DR</A>
+</H2>
+
+<P>
+<P>
+<H3>VIP on lo:0</H3>
+
+<P>
+<P>The VIP on the real-servers must not reply to arp requests from
+the client (or the router between the client and the director).
+<P>
+<H3>Real-servers with Linux 2.2.x kernels</H3>
+
+<P>
+<P>The loopback device does not arp by default for all OS's except
+Linux 2.2.x,2.4.x kernels (even when you use -noarp with ifconfig). You
+may need to do something if you are running a real-server with a
+2.2.x or 2.4.x kernel (see the 
+<A HREF="LVS-HOWTO-3.html#arp_problem">arp problem</A>).
+<P>
+<H3>Hiding the VIP on the real-servers by putting them on a separate network (Lars' method).</H3>
+
+<P>
+<P>Lars set this up first on VS-Tun. Here it is for VS-DR. The director 
+has 2 NICs and the real-servers are on a different network 
+(10.1.1.0/24) to the VIP (192.168.1.0/24). All IPs reply to arps.
+The router/client cannot route to the real-server network and the
+real-server IPs do not need to be internet routable. The only
+change to the lvs_dr.conf file is to change the DIP
+to eth1 (you also don't have to handle the arp problem).
+<P>
+<PRE>
+                        ________
+                       |        |
+                       | client |
+                       |________|
+                       CIP=192.168.1.254
+                           |
+                        (router)
+                           |
+                 VIP=192.168.1.110 (eth0, arps)
+                      __________
+                     |          |
+                     | director |
+                     |__________|
+                     DIP=10.1.1.1 (eth1, arps)
+                           |
+                           |
+          -------------------------------------
+          |                |                  |
+          |                |                  |
+   RIP1=10.1.1.2     RIP2=10.1.1.3     RIP3=10.1.1.4 (eth0)
+   VIP=192.168.1.110 VIP=192.168.1.110 VIP=192.168.1.110 (all lo:0, can arp)
+   _____________     _____________      _____________
+  |             |   |             |    |             |
+  | real-server |   | real-server |    | real-server |
+  |_____________|   |_____________|    |_____________|
+          |                |                  |
+      (router)          (router)           (router)
+          |                |                  |
+          ----------------------------------------------> to client
+</PRE>
+<P>
+<H3>Transparent Proxy (TP or Horms' method) - not having the VIP on the real-server at all.</H3>
+
+<P>
+<P>This subject has it's 
+<A HREF="LVS-HOWTO-15.html#TP">own section</A>.
+<P>
+<H2><A NAME="ss12.3">12.3 VS-DR scales well</A>
+</H2>
+
+<P>
+<P>Performance tests (75MHz pentium classics, on 100Mbps network) with VS-DR 
+on the 
+<A HREF="http://www.linuxvirtualserver.org/Joseph.Mack/performance/single_realserver_performance.html">performance page</A>
+showed that the limit for VS-DR is the rate at which the director can
+forward packets to the real-servers. 
+LVS doesn't add any detectable latency or change
+the throughput of forwarding. 
+There is little load on the director operating at high throughput
+in VS-DR mode. Apparently little computation is involved in forwarding.
+<P>
+<H2><A NAME="VS-DR_director_default_gw"></A> <A NAME="ss12.4">12.4 VS-DR director is default gw for real-servers</A>
+</H2>
+
+<P>
+<P>
+<P>In the case where the director is the firewall for the real-server
+network, the director has to be the default gw for the real-servers.
+<P>If the reply packet from the real-server to the client
+(VIP->CIP) goes through the director (which has a device
+with IP=VIP), the director is being asked to route a packet with a
+src address that is on the director. 
+<P>
+<PRE>
+ >From: Horms &lt;tt/horms@vergenet.net/>
+ >
+ >The problem is that with Direct routing the reply from the real
+ >server has the vip as the source address. As this is an address
+ >of one of the interfaces on the director it will drop it if you
+ >try and forward it through the director. It appears from
+ >experimentation with /proc/sys/net/ipv4/conf/*/rp_filter
+ >that at least on 2.2.14, there is no way to turn this behaviour
+ >off.
+</PRE>
+<P>This type of packet is called a "source martian" and is dropped by 
+the director. martians can be logged with 
+<P>
+<PRE>
+# echo 1 >/proc/sys/net/ipv4/conf/all/log_martians.
+</PRE>
+<P>There are 3 solutions to this; 2 by Julian and 1 by Horms.
+<P>
+<H3>Director has 1 NIC, accepts packets via transparent proxy.</H3>
+
+<P>
+<P>If the director accepts packets for the VIP via transparent proxy,
+then the director doesn't have the VIP and the return packets are
+processed normally. (Note: transparent proxy only works on the director
+for 2.2.x kernels).
+<P>Here's Julian's posting
+<P>
+<P>
+<PRE>
+
+                Clients
+                   |
+                  ISP
+                   |eth0/ppp0/...
+                Router/Firewall/Director (LVS box)
+                   |eth1
+        +----------+------------+
+        |eth0                   |eth0
+        Real 1                  Real2
+</PRE>
+<P>Router: transparent proxy for VIP (or all served VIPs).
+The ISP must feed your Director with packets for your subnet 199.199.199.0/24
+VS-DR mode (Yes, VS-DR, this is not a mistake).
+eth1: 199.199.199.2.
+default gw is ISP.
+<P>Real server(s): nothing special. 
+VIP on hidden device or via transparent proxy.
+eth0: 199.199.199.3.
+default gateway is 199.199.199.2 (the Director)
+<P>This is a minimum required config. You can add internal subnets
+yourself using the same physical network (one NIC) or by adding additional
+NICs, etc. They are not needed for this test.
+<P>Packets from the real servers with saddr=VIP will be forwarded
+from the director because VIP is not configured in the Director. We expect
+that this setup is faster than VS/NAT.
+<P>
+<H3><A NAME="martian"></A> Julian's martian modification</H3>
+
+<P>
+<P>This is a kernel patch, director has 2 NICs, VIP is on outside NIC.
+It doesn't work with one NIC.
+<P>The patch (below) has been tested against 2.2.15pre9 (Joe)
+and 2.2.13 (Stephen Zander <CODE>gibreel@pobox.com</CODE>).
+The kernel code is not changing very fast for these files. 
+If patching other 2.2 kernels produces no rejects (HUNK FAILED)
+then the patch is probably OK. 
+The patch for 2.4.x kernels is at 
+<A HREF="http://www.linuxvirtualserver.org/~julian">Julian's patch page</A>
+and in the text below.
+<P>After applying this patch, for a test, use the default
+values for */rp_filter(=0). This allows real servers to send
+packets with saddr=VIP and daddr=client through the Director.
+<P>If this patch is applied and external_eth/rp_filter is
+0 (which is the default) the real servers can receive packets
+with saddr=any_director_ip and dst=any_RIP_or_VIP which is not
+very good. On the external net, set rp_filter=1 for better
+security.
+<P>Here's the test setup (Joe)
+<PRE>
+             ____________
+            |            |
+            |  client    |
+            |____________|
+                  |
+                  |  192.168.2.0/24
+             _____|______
+            |            |
+            |  director  | VS-DR director has 2 NICs
+            |____________|
+                  | eth0    192.168.1.9
+                  | eth0:12 192.168.1.1
+                  |
+                  |  192.168.1.0/24
+             _____|____________________
+            |
+            |
+       _____|__________
+      |                |
+      | real-server(s) | default gw=192.168.1.1
+      |________________|
+</PRE>
+<P>192.168.1.1 is the normal router. For the test it was put on the
+director instead (as an alias). The director has 2 NICs, with forwarding=on
+(client and real-servers can ping each other).
+<P>Director runs linux-0.9.8-2.2.15pre9 unpatched or with Julian's patch. 
+LVS is setup using the configure script in the HOWTO,
+redirecting telnet, with rr scheduling to 3 real-servers.
+The real-servers were running 2.0.36 (1) or 2.2.14 (2).
+The arp problem was handled for the 2.2.14 real-servers by permanently
+installing in the client's arp table, 
+the MAC address of the NIC on the outside of the director, 
+using the command `arp -f /etc/ethers`
+<P>The director was booted 4 times, into unpatched, patched, unpatched and
+patched. After each reboot the lvs scripts were run on the director and
+the real-servers, then the functioning of the LVS tested by telnet'ing
+multiple times from the client to the VIP.
+<P>For the unpatched kernel, the client connection hung and inactive connections
+acccumulated for each real-server. For the patched kernel, the client
+telnet'ed to the VIP connecting with each real-server in turn.
+<P>The configure script will set up the modified VS-DR (it will warn you 
+that you need the patch to work). 
+Setup details are in 
+<A HREF="http://www.linuxvirtualserver.org/Joseph.Mack/performance/single_realserver_performance.html">performance page</A><P>
+<H3>Martian modification performance</H3>
+
+<P>
+<P>Performance has similar latency to VS-NAT but the load is low on the director
+at high throughput of VS-DR (see the
+<A HREF="http://www.linuxvirtualserver.org/Joseph.Mack/performance/single_realserver_performance.html">performance page</A>).
+<P>
+<H3>Martian modification patch for 2.2.x</H3>
+
+<P>
+<P>
+<BLOCKQUOTE><CODE>
+<HR>
+<PRE>
+
+--- linux/include/net/ip_fib.h.orig     Wed Feb 23 16:54:27 2000
++++ linux/include/net/ip_fib.h  Wed Mar 15 13:46:22 2000
+@@ -200,7 +200,7 @@
+ extern int inet_rtm_getroute(struct sk_buff *skb, struct nlmsghdr* nlh, void *arg);
+ extern int inet_dump_fib(struct sk_buff *skb, struct netlink_callback *cb);
+ extern int fib_validate_source(u32 src, u32 dst, u8 tos, int oif,
+-                              struct device *dev, u32 *spec_dst, u32 *itag);
++                       struct device *dev, u32 *spec_dst, u32 *itag, int our);
+ extern void fib_select_multipath(const struct rt_key *key, struct fib_result *res);
+
+ /* Exported by fib_semantics.c */
+--- linux/net/ipv4/fib_frontend.c.orig  Wed Feb 23 16:54:27 2000
++++ linux/net/ipv4/fib_frontend.c       Wed Mar 15 14:44:45 2000
+@@ -189,7 +189,7 @@
+  */
+
+ int fib_validate_source(u32 src, u32 dst, u8 tos, int oif,
+-                       struct device *dev, u32 *spec_dst, u32 *itag)
++                       struct device *dev, u32 *spec_dst, u32 *itag, int our)
+ {
+        struct in_device *in_dev = dev->ip_ptr;
+        struct rt_key key;
+@@ -206,7 +206,8 @@
+                return -EINVAL;
+        if (fib_lookup(&amp;key, &amp;res))
+                goto last_resort;
+-       if (res.type != RTN_UNICAST)
++       if ((res.type != RTN_UNICAST) &amp;&amp;
++               ((res.type != RTN_LOCAL) || our))
+                return -EINVAL;
+        *spec_dst = FIB_RES_PREFSRC(res);
+        if (itag)
+@@ -216,13 +217,20 @@
+ #else
+        if (FIB_RES_DEV(res) == dev)
+ #endif
++       {
++               if (res.type == RTN_LOCAL) {
++                       *itag = 0;
++                       return -EINVAL;
++               }
+                return FIB_RES_NH(res).nh_scope >= RT_SCOPE_HOST;
++       }
+
+        if (in_dev->ifa_list == NULL)
+                goto last_resort;
+        if (IN_DEV_RPFILTER(in_dev))
+                return -EINVAL;
+        key.oif = dev->ifindex;
++       if (res.type == RTN_LOCAL) key.iif = loopback_dev.ifindex;
+        if (fib_lookup(&amp;key, &amp;res) == 0 &amp;&amp; res.type == RTN_UNICAST) {
+                *spec_dst = FIB_RES_PREFSRC(res);
+                return FIB_RES_NH(res).nh_scope >= RT_SCOPE_HOST;
+--- linux/net/ipv4/route.c.orig Wed Feb 23 17:00:07 2000
++++ linux/net/ipv4/route.c      Wed Mar 15 13:07:28 2000
+@@ -1037,7 +1037,7 @@
+                if (!LOCAL_MCAST(daddr))
+                        return -EINVAL;
+                spec_dst = inet_select_addr(dev, 0, RT_SCOPE_LINK);
+-       } else if (fib_validate_source(saddr, 0, tos, 0, dev, &amp;spec_dst, &amp;itag) &lt; 0)
++       } else if (fib_validate_source(saddr, 0, tos, 0, dev, &amp;spec_dst, &amp;itag, our) &lt; 0)
+                return -EINVAL;
+
+        rth = dst_alloc(sizeof(struct rtable), &amp;ipv4_dst_ops);
+@@ -1181,7 +1181,7 @@
+        if (res.type == RTN_LOCAL) {
+                int result;
+                result = fib_validate_source(saddr, daddr, tos, loopback_dev.ifindex,
+-                                            dev, &amp;spec_dst, &amp;itag);
++                                            dev, &amp;spec_dst, &amp;itag, 1);
+                if (result &lt; 0)
+                        goto martian_source;
+                if (result)
+@@ -1206,7 +1206,7 @@
+                return -EINVAL;
+        }
+
+-       err = fib_validate_source(saddr, daddr, tos, FIB_RES_OIF(res), dev, &amp;spec_dst, &amp;itag);
++       err = fib_validate_source(saddr, daddr, tos, FIB_RES_OIF(res), dev, &amp;spec_dst, &amp;itag, 0);
+        if (err &lt; 0)
+                goto martian_source;
+
+@@ -1279,7 +1279,7 @@
+        if (ZERONET(saddr)) {
+                spec_dst = inet_select_addr(dev, 0, RT_SCOPE_LINK);
+        } else {
+-               err = fib_validate_source(saddr, 0, tos, 0, dev, &amp;spec_dst, &amp;itag);
++               err = fib_validate_source(saddr, 0, tos, 0, dev, &amp;spec_dst, &amp;itag, 1);
+                if (err &lt; 0)
+                        goto martian_source;
+                if (err)
+</PRE>
+<HR>
+</CODE></BLOCKQUOTE>
+<P>
+<H3>Martian modification patch for 2.4.0</H3>
+
+<P>
+<P>
+<BLOCKQUOTE><CODE>
+<HR>
+<PRE>
+--- linux-2.4.0/include/net/ip_fib.h~   Sat Jan 20 13:16:50 2001
++++ linux/include/net/ip_fib.h  Sun Mar 11 11:07:22 2001
+@@ -203,7 +203,7 @@
+ extern int inet_rtm_getroute(struct sk_buff *skb, struct nlmsghdr* nlh, void *arg);
+ extern int inet_dump_fib(struct sk_buff *skb, struct netlink_callback *cb);
+ extern int fib_validate_source(u32 src, u32 dst, u8 tos, int oif,
+-                              struct net_device *dev, u32 *spec_dst, u32 *itag);
++                              struct net_device *dev, u32 *spec_dst, u32 *itag, int our);
+ extern void fib_select_multipath(const struct rt_key *key, struct fib_result *res);
+ 
+ /* Exported by fib_semantics.c */
+--- linux-2.4.0/net/ipv4/fib_frontend.c~        Fri Jun  2 07:25:21 2000
++++ linux/net/ipv4/fib_frontend.c       Sun Mar 11 11:07:22 2001
+@@ -204,7 +204,8 @@
+  */
+ 
+ int fib_validate_source(u32 src, u32 dst, u8 tos, int oif,
+-                       struct net_device *dev, u32 *spec_dst, u32 *itag)
++                       struct net_device *dev, u32 *spec_dst, u32 *itag,
++                       int our)
+ {
+        struct in_device *in_dev;
+        struct rt_key key;
+@@ -233,7 +234,8 @@
+ 
+        if (fib_lookup(&amp;key, &amp;res))
+                goto last_resort;
+-       if (res.type != RTN_UNICAST)
++       if ((res.type != RTN_UNICAST) &amp;&amp;
++               ((res.type != RTN_LOCAL) || our))
+                goto e_inval_res;
+        *spec_dst = FIB_RES_PREFSRC(res);
+        if (itag)
+@@ -244,6 +246,10 @@
+        if (FIB_RES_DEV(res) == dev)
+ #endif
+        {
++               if (res.type == RTN_LOCAL) {
++                       *itag = 0;
++                       goto e_inval_res;
++               }
+                ret = FIB_RES_NH(res).nh_scope >= RT_SCOPE_HOST;
+                fib_res_put(&amp;res);
+                return ret;
+@@ -254,6 +260,7 @@
+        if (rpf)
+                goto e_inval;
+        key.oif = dev->ifindex;
++       if (res.type == RTN_LOCAL) key.iif = loopback_dev.ifindex;
+ 
+        ret = 0;
+        if (fib_lookup(&amp;key, &amp;res) == 0) {
+--- linux-2.4.0/net/ipv4/route.c~       Sun Nov  5 23:10:48 2000
++++ linux/net/ipv4/route.c      Sun Mar 11 11:07:22 2001
+@@ -1177,7 +1177,7 @@
+                if (!LOCAL_MCAST(daddr))
+                        goto e_inval;
+                spec_dst = inet_select_addr(dev, 0, RT_SCOPE_LINK);
+-       } else if (fib_validate_source(saddr, 0, tos, 0, dev, &amp;spec_dst, &amp;itag) &lt; 0)
++       } else if (fib_validate_source(saddr, 0, tos, 0, dev, &amp;spec_dst, &amp;itag, our) &lt; 0)
+                goto e_inval;
+ 
+        rth = dst_alloc(&amp;ipv4_dst_ops);
+@@ -1339,7 +1339,7 @@
+        if (res.type == RTN_LOCAL) {
+                int result;
+                result = fib_validate_source(saddr, daddr, tos, loopback_dev.ifindex,
+-                                            dev, &amp;spec_dst, &amp;itag);
++                                            dev, &amp;spec_dst, &amp;itag, 1);
+                if (result &lt; 0)
+                        goto martian_source;
+                if (result)
+@@ -1364,7 +1364,7 @@
+                goto e_inval;
+        }
+ 
+-       err = fib_validate_source(saddr, daddr, tos, FIB_RES_OIF(res), dev, &amp;spec_dst, &amp;itag);
++       err = fib_validate_source(saddr, daddr, tos, FIB_RES_OIF(res), dev, &amp;spec_dst, &amp;itag, 0);
+        if (err &lt; 0)
+                goto martian_source;
+ 
+@@ -1447,7 +1447,7 @@
+        if (ZERONET(saddr)) {
+                spec_dst = inet_select_addr(dev, 0, RT_SCOPE_LINK);
+        } else {
+-               err = fib_validate_source(saddr, 0, tos, 0, dev, &amp;spec_dst, &amp;itag);
++               err = fib_validate_source(saddr, 0, tos, 0, dev, &amp;spec_dst, &amp;itag, 1);
+                if (err &lt; 0)
+                        goto martian_source;
+                if (err)
+</PRE>
+<HR>
+</CODE></BLOCKQUOTE>
+<P>
+<H3>Performance of Martian Modification</H3>
+
+<P>
+<P>See Performance page on website.
+<P>
+<H3>Accepting packets on VS-DR director by fwmarks</H3>
+
+<P>
+<P>Horms 
+<A HREF="LVS-HOWTO-8.html#fwmark">fwmarks</A> allows the director 
+to accept packets by fwmark. 
+There is no VIP required on the director.
+<P>
+<H2><A NAME="Pearthree"></A> <A NAME="ss12.5">12.5 default gw(s) and routing with VS-DR/VS-Tun</A>
+</H2>
+
+<P>
+<P>The material here came from listening to a talk by Herbie Pearthree
+of IBM (posting 2000-10-10) and from a posting by TC Lewis (lost it).
+<P>In normal IP communication between two hosts, the setup is symmetrical:
+each end of the link has an ethernet devices with an IPs and
+a route to the other machine. Packets are transmitted in pairs 
+(an outgoing packet and a reply, often just an ACK).
+<P>In VS-DR or VS-Tun the roles of the two machines are split
+between 3 machines. Here is a two network test setup, with 
+the client in the position normally occupied by the router. 
+In production, the client will have a public IP and connect
+via a router. (This is my test setup. A big trap is that
+services which make calls from the RIP, 
+eg 
+<A HREF="LVS-HOWTO-16.html#authd">identd</A> and 
+<A HREF="LVS-HOWTO-10.html#rshd">rshd</A>
+will work in my setup, but fail in a production setup
+as the RIP will not be a routable IP).
+<P>
+<P>
+<PRE>
+        ____________
+       |            |192.168.1.254 (eth0)
+       |  client    |----------------------
+       |____________|          &lt;-         |
+     CIP=192.168.2.254 (eth1)             |
+|             |                           |
+V             |                           |
+     VIP=192.168.2.110 (eth0)             |
+        ____________                      | 
+       |            |                     |
+       |  director  |                     |
+       |____________|                     |
+     DIP=192.168.1.1 (eth1, arps)         |
+|             |                           |
+V             |----------------------------
+              |                 ->              
+     RIP=192.168.1.2 (eth0)
+     VIP=192.168.2.110 (lo:0, no_arp)
+        _____________
+       |             |
+       | real-server |
+       |_____________|
+</PRE>
+<P>
+<H3>Director's default gw</H3>
+
+<P> 
+<P>The client sends a packet to the VIP on the director.
+The director's response is a packet to the MAC address of the RIP.
+Normally the director would send a packet to the client (on the
+internet). In an LVS the director doesn't need a default gw as it never 
+sends packets back to the client (outside world), it only sends packets
+to the real-servers. A default gw for the director
+is not needed for the functioning of the LVS. Having
+a default gw would only allow the director to reply
+to packets from the internet, such as port scans, creating
+a security hazard. The director shouldn't have a default gw.
+<P>
+<H3>Real-server's default gw, route to real-server from router</H3>
+
+<P>
+<P>The real-server doesn't reply to the director, instead it sends
+its reply to the client. The real-server requires a default gw (here
+192.168.1.154), but the client/router never replies to the real-server,
+the client/router sends its replies to the director. So the client/router
+doesn't need a route to the real-server network. To have one would
+be a security hazard. The real-server now can't ping its default gw
+(since there's no route for the reply packet), but the LVS still works.
+<P>The flow of packets around the VS-DR LVS is shown by the ascii arrows.
+<P>When an attacker tries to access the nodes on the LVS, it can only
+connect to the LVS services on the director. It can't
+connect to the real-server network, as there is no routing to the
+real-servers (even if they get access to the router).
+Presumably the real-servers are not accessable from the outside
+as they'll be on private networks anyhow.
+<P>Note that for Julian's 
+<A HREF="#martian">martian modification</A>, 
+the director will need a default gw.
+<P>
+<H2><A NAME="route_on_non_ip_interface"></A> <A NAME="ss12.6">12.6 routing to real-server from director</A>
+</H2>
+
+<P>
+<P>If you are only using the link between the director and real-server for
+VS-DR packets (<EM>i.e.</EM> you aren't telnet or ssh'ing from the real-server
+to the director for your admin, and you aren't copying logs from one machine to
+another), then you don't need an IP on the interface on the director
+which connects to the real-server(s).
+<P>tc lewis <CODE>tcl@bunzy.net</CODE> 12 Jul 2000 (paraphrased)
+<P>
+<BLOCKQUOTE>
+I would like to send packets from the VS-DR director to the real-servers
+by a separate interface (eth2), but not assign an IP to this interface.
+Normally I put a 192.168.100.x ip on eth2, but without it, route add -net
+192.168.100.0 netmask 255.255.255.0 dev eth2 just gives me an error about
+eth2 not existing. I just want to save an extra IP.
+<P>
+<P>What i'm asking is: does the director's eth2 need an ip on
+192.168.100.0/24, or can i just somehow add that route to that interface
+to tell the machine to send packets that way? With lvs, the
+real servers are never going to care about the director's interface ip,
+since there's no direct tcp/ip connections or anything there, but
+it looks like it still needs an ip anyway.
+<P>If all that that interface is doing is forwarding outgoing 
+packets from the director via the dr method, then i don't see why it
+needs an ip address. 
+</BLOCKQUOTE>
+<P>
+<P>Ted Pavlic <CODE>tpavlic@netwalk.com</CODE>
+<P>You basically want to do device routing. There's nothing special about
+this -- many routers do it... NT even does it. So does Linux.
+Your original route command should work
+<P>
+<PRE>
+route add -net 192.168.100.0 netmask 255.255.255.0 dev eth2
+</PRE>
+<P>as long as you've brought up eth2. Now tricking Linux into bringing up eth2
+without an address might be the hard part.  Try this:
+<P>
+<PRE>
+ifconfig eth2 0.0.0.0 up
+
+or 
+
+ifconfig eth2 0 up
+</PRE>
+<P>tc lewis <CODE>tcl@bunzy.net</CODE>
+<P>
+<PRE>
+ifconfig eth0 0.0.0.0 up 
+</PRE>
+<P>then the route did work.  I tried that before with a netmask but it didn't work. 
+<P>Ted Pavlic <CODE>tpavlic@netwalk.com</CODE>
+<P>Remember that IP=0 actually is IP=0.0.0.0, which is another name for the
+default route.
+<P>The reason why IP=0 is 0.0.0.0 ... Remember that each IP address is simply a
+4-byte unsigned integer, right? Well... the easiest way to envision this is
+to imagine that an IP is just like a base-256 number. For example:
+<P>
+<PRE>
+216.69.192.12 (my mail server) would be:
+
+12 +
+192 * 256 +
+69  * 256 * 256 +
+216 * 256 * 256 * 256
+</PRE>
+<P>Which is equal to 3628449804. So...
+<P>telnet 216.69.192.12 25
+<P>is the same as:
+<P>telnet 3628449804 25
+<P>0.0.0.0 is just a special system address which is the same as the default
+route. Making a route from 0.0.0.0 to some gateway will set your default
+route equal to that gateway. That's all "route add default gw ..." does.
+Don't believe me? Do a route -n.
+<P>So when I told TC to put 0 on his IP-less NIC, I was just choosing a system
+IP that I knew would not ever need to be transmitted on. Linux wanted an IP
+to create the interface... so I gave it one -- the IP of the default
+gateway. Packets would never need to leave the system going to 0.0.0.0, and
+Linux has to listen to this address ANYWAY, so you might as well explicitly
+put it on an interface.
+<P>What would have also worked (and might have been a better idea) would be to
+put 127.0.0.1 on that interface. That is another system address that Linux
+will listen to anyway if loopback has been turned on... and it should never
+transmit anything away from itself with that as the destination address, so
+it's safe to put it on more than one interface.
+<P>The only reason I chose 0 over 127.0.0.1 is because 0 is easy... It's
+small... It's quick. Whenever I want to telnet to my localhost's port blah I
+just do a:
+<P>telnet 0 blah
+<P>because I'm lazy.. (Linux sees 0, interprets 0.0.0.0, sees an address it
+listens to, and basically treats 0 like a loopback)
+<P>Also you'll notice that if you give an interface 0.0.0.0 as an IP address
+and do an ifconfig to get stats on that interface, it will still retain no
+IP address. Another perquesite of using 0.0.0.0 in TC's particular situation.
+It may actually cause less confusion in the end.
+<P>
+<HR>
+<A HREF="LVS-HOWTO-13.html">Next</A>
+<A HREF="LVS-HOWTO-11.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc12">Contents</A>
+</BODY>
+</HTML>

@@ -1,0 +1,180 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO: Configure tools</TITLE>
+ <LINK HREF="LVS-HOWTO-10.html" REL=next>
+ <LINK HREF="LVS-HOWTO-8.html" REL=previous>
+ <LINK HREF="LVS-HOWTO.html#toc9" REL=contents>
+</HEAD>
+<BODY>
+<A HREF="LVS-HOWTO-10.html">Next</A>
+<A HREF="LVS-HOWTO-8.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc9">Contents</A>
+<HR>
+<H2><A NAME="configure"></A> <A NAME="s9">9. Configure tools</A></H2>
+
+<P>
+<P>There are some tools to help you configure an LVS.
+<P>
+<UL>
+<LI>Gui for VS-DR lvs-gui http://www.us.vergenet.net/linux/lvs-gui.
+This only sets up a VS-DR LVS and is awaiting further work.
+</LI>
+<LI>configure script for
+all LVS types which does sanity checking on setup but which
+doesn't handle director failover
+</LI>
+<LI>Ultra Monkey which handles director failover, but 
+has to be setup by hand.</LI>
+</UL>
+<P>A recent survey of production LVS's 
+(by Lorn Kay <CODE>lorn_kay@hotmail.com</CODE>, results on the 
+<A HREF="http://www.linuxvirtualserver.org/survey/survey_2000101.html">LVS website</A>)
+showed that 10 out of 19 were setup
+by methods described as "other", ie they didn't use any of the scripts
+on the LVS website. Clearly the above scripts are not regarded as production
+quality by our users.
+<P>
+<H2><A NAME="ss9.1">9.1 Configure</A>
+</H2>
+
+<P>
+<P>(The section in the LVS-mini-HOWTO may be more recent than this.)
+<P>The configure script that reads a conf file and
+sets up VS-DR, VS-NAT, VS-Tun, with single or multi-NIC machines
+using regular ethernet devices or transparent proxy to accept
+packets. Elementary checks are done on routing and connectivity
+and the script has always produced a working LVS when no errors
+are reported. (I haven't tried it with any deliberately pathological
+cases).
+<P>The output is a well commented rc.lvs and rc.mon 
+file to run at bootup (or when you're setting up an LVS).
+<P>The script is in the Software section of the website and
+will have a name like configure-x.x-lvs.tar.gz.
+<P>The script does not handle director failover.
+<P>The configure script detects the kernel version of the director
+(for old versions of ipvs/kernels) and is run on the director. 
+The resulting rc.lvs (and rc.mon) files are run on the director
+and then the real-servers (the configure files/directory nfs exported 
+to the real-servers, where I run the same rc.lvs file to configure 
+the real-servers). The rc.lvs file knows whether it's running on a 
+director or real-server. After setup, the network connections 
+neccessary to export this directory can be removed.
+<P>Running the script on the real-servers after it
+is run on the director allows the rc.lvs script to check the
+connections to the now configured director. Running the rc.lvs
+script on the real-server first will achieve the same result, but
+you will get error messages, and won't know if it succeeded even if
+it did.
+<P>Pick an appropriate template conf file (lvs_nat.conf,
+lvs_tun.conf or lvs_dr.conf) for the mode you are operating the
+LVS under (VS-NAT, VS-Tun or VS-DR respectively) and edit the
+IPs and services for your situation. The files come preconfigured
+for telnet as the service. This is the simplest service
+for initial tests: the client is readily available and on
+connection, the login prompt will tell you which server you have
+connected to. Use round robin scheduling, so that you will
+connect to each server in turn, confirming that they are all
+working.
+<P>Other services can be added by uncommenting/adding or editing the
+entries in the example *.conf files. The *.conf files give
+suggested IP's (192.168.1.x/24, 10.1.1.x/24) for the various
+machines.
+<P>For those that don't like to debug disasters from trivial mistakes, 
+the configure script will use either the name (eg telnet) or
+port (eg 23) of the service in the *.conf file, using the
+/etc/services file to translate one to another. Likely additions
+needed to your /etc/services will be
+<P>
+<PRE>
+ftp-data        20/tcp
+ssh             22/tcp
+domain          53/tcp  nameserver      dns #the string "dns" needs to be added here
+domain          53/ucp  nameserver      dns #and here
+shell           514/tcp cmd             rsh #add rsh here
+https           443/tcp
+https           443/udp
+printer         515/tcp spooler         lpd #add the string "lpd" here
+nfs             2049/udp        nfs
+mysql           3306/tcp
+mysql           3306/udp
+netpipe         5002/tcp
+</PRE>
+<P>In several instances, a machine will need multiple IPs. You can
+put multiple IP's on a single NIC with IP aliasing (an option
+when building the kernel) - just enter the aliased interface (eg
+eth0:12) for that IP into the *.conf file.
+<P>run the configure script
+<P>$ ./configure.pl lvs_nat.conf
+<P>This produces an rc.lvs_xxx script (eg rc.lvs_nat, rc.lvs_tun,
+rc.lvs_dr), and a mon_xxx.cf script. (After testing put rc.lvs_xxx into
+/etc/rc.d or /etc/init.d and put mon_xxx.cf in /etc/mon)
+<P>Run the rc.lvs script on the director and then the real-servers with 
+the command
+<P>$ . ./rc.lvs_dr
+<P>or possibly (if you get weird errors, eg it doesn't detect correctly whether 
+it's running on a director or a real-server - this happens on my 2.0.36 real-server)
+<P>$sh rc.lvs_dr
+<P>The rc.lvs script -
+<P>
+<UL>
+<LI>adds ethernet devices and routes to director, real-servers (including non-Linux)</LI>
+<LI>checks connections with fping.</LI>
+<LI>runs ipchains </LI>
+<LI>turns ipforwarding on (VS-NAT) or off (VS-DR, VS-Tun)</LI>
+<LI>turns off icmp redirects (VS-NAT)</LI>
+<LI>adds services with ipvsadm.</LI>
+</UL>
+<P>The rc.lvs script does not -
+<P>
+<UL>
+<LI>know about director failover. It assumes there is only one director.</LI>
+</UL>
+<P>Check the output from ipvsadm, ifconfig -a and netstat -rn on the
+director and then the real-server(s), to see that the 
+services/IP's are correct. If not re-edit and re-run the script(s).
+<P>
+<H3>Test with telnet</H3>
+
+<P>
+<P>Telnet is a non-persistent service (in the http sense, rather than the LVS sense)
+and will allow you to check that all real-servers are present (you'll
+get the login prompt from each real-server in turn).
+<P>Check that the service(s) are running on each server at the IP of
+the VIP (use netstat -an). Some services (eg telnet listen to
+0.0.0.0, ie to all IPs on a machine).
+<P>If there are no errors on running the rc.lvs_xxx script, then
+telnet from the client to the VIP (here 192.168.1.110). You will
+be routed through to one of the real-servers and you will get the
+login prompt (and real name) of a real-server and can login.
+<P>On the director look at the output of ipvsadm, you should see a
+connection to a real-server on port:23.
+<P>On the real-server do
+<P>$ netstat -an | grep 23
+<P>and look for connections to the telnet port.
+<P>Logout and telnet again to the VIP. You will get the login prompt
+from the next real-server.
+<P>
+<H3>Test with something else eg http</H3>
+
+<P>
+<P>Edit lvs_nat.conf activating http, rerun configure.pl and rerun
+the new rc.lvs_nat files.
+<P>http:
+Point your browser to the VIP http://192.168.1.110.  You will get
+the DocumentRoot of one of the real-servers. Open another copy of 
+the browser and connect again. You should get the other server 
+(this will be easier to see if the webpages are different). Look 
+at the output of ipvsadm on the director for connections to the httpd 
+ports, and on the server look at the output from netstat -an | grep 80 
+(or 8080 if you are running VS-NAT and have remapped the ports) for connections.
+<P>If your httpd is persistent (in the http sense), 
+you will/may connect to the same website each time.
+<P>
+<HR>
+<A HREF="LVS-HOWTO-10.html">Next</A>
+<A HREF="LVS-HOWTO-8.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc9">Contents</A>
+</BODY>
+</HTML>

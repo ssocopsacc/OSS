@@ -1,0 +1,81 @@
+<html>
+
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+  <title>The Local Node feature page</title>
+</head>
+
+<body text="#000000" bgcolor="#ffffff"
+      link="#0062CE" vlink="#6C9EFF" alink="#ff0000">
+
+<h1>The Local Node Feature</h1>
+
+<p>This page contains information about the Local Node feature of
+LinuxDirector.</p>
+
+<p>If the local node feature is enabled, the load balancer can not
+only redirect the packets of the specified port to the other servers
+(remote nodes) to process it, but also can process the packets locally
+(local node). Which node is chosen depends on the scheduling
+algorithms. This local node feature can be used to build a virtual
+server of a few nodes, for example, 2, 3 or more sites, in which it is
+a resource waste if the load balancer is only used to redirect
+packets. It is wise to direct some packets to the local node to
+process. </p>
+
+<p>This feature can also be used to build distributed identical
+servers, in which one is too busy to handle requests locally, then it
+can seamlessly forward requests to other serversto process them.This
+feature can be applied to VS-NAT, VS-TUN and VS-DR.</p>
+
+<p>To make a load balancer process a service locally, you just need to
+add an entry in the virtual service, whose destination address is one
+of the load balancer's IP addresses, 127.0.0.1 is often used for this
+purpose.</p>
+
+<p>Here is my configure example for testing virtual server via
+tunneling. There is only one real server and a load balancer in the
+cluster. The load balancer uses the VS-DR method to forward packets to
+the real server, and the load balancer can also process some requests
+for the virtual service. The configuration is as follows.</p>
+
+<p>The load balancer (LinuxDirector), kernel 2.2.13</p>
+
+<blockquote>
+    <p>ifconfig eth0 172.26.20.111 netmask 255.255.255.0
+    broadcast 172.26.20.255 up <br>
+    route add -net 172.26.20.0 netmask 255.255.255.0 dev eth0 <br>
+    ifconfig eth0:0 172.26.20.110 netmask 255.255.255.255
+    broadcast 172.26.20.110 up <br>
+    route add -host 172.26.20.110 dev eth0:0 <br>
+    ipvsadm -A -t 172.26.20.110:23 -s wlc<br>
+    ipvsadm -a -t 172.26.20.110:23 -R 127.0.0.1<br>
+    ipvsadm -a -t 172.26.20.110:23 -R 172.26.20.112 -g</p>
+</blockquote>
+
+<p>The real server 1, kernel 2.0.36 </p>
+
+<blockquote>
+    <p>ifconfig eth0 172.26.20.112 netmask 255.255.255.0
+    broadcast 172.26.20.255 up <br>
+    route add -net 172.26.20.0 netmask 255.255.255.0 dev eth0 <br>
+    ifconfig lo:0 172.26.20.110 netmask 255.255.255.255
+    broadcast 172.26.20.110 up <br>
+    route add -host 172.26.20.110 dev lo:0</p>
+</blockquote>
+
+
+<p>When two "telnet 172.26.20.110" commands are issued, one will
+appear the login prompt of the load balancer, the other will appear
+the login prompt of the real server.</p>
+
+<hr>
+
+<p align="center">
+<font size="-1">
+$Id: LocalNode.html,v 1.2 2001/06/07 20:09:39 copeland Exp $
+<br>Created on: 1999/2/2
+</font>
+
+</body>
+</html>

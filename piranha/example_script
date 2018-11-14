@@ -1,0 +1,16 @@
+#!/bin/sh 
+# This script is functionally equivilent to the
+# normal send string 'GET / HTTP/1.0\r\n\r\n'
+# It's simply put here as an example of how
+# $1 passing is used in a shell script
+# Makes use of nc - netcat (nc-1.10-9)
+
+
+TEST=`(echo "GET / HTTP/1.0\r\n\r\n" | nc $1 80) | grep -c Apache`
+
+if [ $TEST == "1" ]; then 
+        echo "OK" 
+else 
+        echo "FAIL" 
+fi
+

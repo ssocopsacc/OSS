@@ -1,0 +1,5 @@
+#
+# To pass additional options (for instance, --forceactive) to the
+# pulse binary at startup, set OPTIONS here.
+#
+#OPTIONS=

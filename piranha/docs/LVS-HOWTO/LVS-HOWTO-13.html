@@ -1,0 +1,246 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO: VS-Tun</TITLE>
+ <LINK HREF="LVS-HOWTO-14.html" REL=next>
+ <LINK HREF="LVS-HOWTO-12.html" REL=previous>
+ <LINK HREF="LVS-HOWTO.html#toc13" REL=contents>
+</HEAD>
+<BODY>
+<A HREF="LVS-HOWTO-14.html">Next</A>
+<A HREF="LVS-HOWTO-12.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc13">Contents</A>
+<HR>
+<H2><A NAME="s13">13. VS-Tun</A></H2>
+
+<P>
+<P>VS-Tun is an LVS original. It is based on VS-DR and has the same
+high scalability/throughput of VS-DR.
+<P>VS-Tun can be used with real-servers that can tunnel
+(==IPIP encapsulation). 
+The director encapsulates the request
+packet inside an IPIP packet before sending it to the real-server.
+The real-server must be able to decapsulate the IPIP packet
+(currently linux only).
+<P>Unlike VS-DR, with VS-Tun the real-servers can be on a network
+remote from the director, and can each be on separate networks.
+Thus the real-servers could be in different countries (eg a set of
+ftp mirror sites for a project). If this is the case the
+real-servers will be generating reply packets with VIP->CIP. 
+Not being on the VIP network, the routers for the
+real-servers will have to be programmed to accept outgoing packets
+with source=VIP. Routers normally drop these packets as an
+anti-spoofing measure.
+<P>If the real-servers are on the same network as the director, then
+VS-DR and VS-Tun are equivalent in terms of performance and ease
+of setup
+(see the 
+<A HREF="http://www.linuxvirtualserver.org/Joseph.Mack/performance/single_realserver_performance.html">performance page</A>)
+<P>With VS-DR, the real-servers can have almost any OS.
+<P>Here's an example set of IPs for a VS-Tun setup. For (my)
+convenience the servers are on the same network as the client.
+The only restrictions for VS-Tun with remote hosts are that the
+client must be able to route to the director and that the
+real-servers must be able to route to the client (the return
+packets to the client come directly from the real-servers and do
+not go back through the director).
+<P>Normally for VS-Tun,the client is on a different network to the
+director/server(s), and each server has its own route to the
+outside world. In the simple test case below where all machines
+are on the 192.168.1.0 network there would be no default route
+for the servers, and routing for packets from the servers to the
+client would use the device on the 192.168.1.0 network
+(presumably eth0). In reallife, the real-servers would have their
+own router/connection to the internet and packets returning to
+the client would go through this router. In any case reply
+packets do not go back through the director.
+<P>
+<PRE>
+Machine                      IP
+client                       CIP=192.168.1.254
+director                     DIP=192.168.1.1
+                             VIP=192.168.1.110 (arps, IP clients connect to)
+real-server-1                RIP1=192.168.1.2, VIP (tunl0, non-arping, 192.168.1.110)
+real-server-2                RIP2=192.168.1.3, VIP (tunl0, non-arping, 192.168.1.110)
+real-server-3                RIP3=192.168.1.4, VIP (tunl0, non-arping, 192.168.1.110)
+.
+.
+real-server-n                RIPn=192.168.1.n+1, VIP (tunl0, non-arping, 192.168.1.110)
+</PRE>
+<P>
+<PRE>
+#lvs_tun.conf
+LVS_TYPE=VS_TUN
+INITIAL_STATE=on  
+VIP=eth0:110 192.168.1.110 255.255.255.255 192.168.1.110
+DIRECTOR_INSIDEIP=eth0 192.168.1.9 192.168.1.0 255.255.255.0 192.168.1.255
+DIRECTOR_DEFAULT_GW=client
+SERVICE=t telnet rr real-server1 real-server2 
+SERVER_VIP_DEVICE=tunl0
+SERVER_NET_DEVICE=eth0
+SERVER_DEFAULT_GW=client
+#----------end lvs_tun.conf------------------------------------
+</PRE>
+<P>
+<PRE>
+                        ________
+                       |        |
+                       | client |
+                       |________|
+                       CIP=192.168.1.254
+                           |
+                           |
+                      VIP=192.168.1.110 (eth0:1, arps)
+                       __________
+                      |          |
+                      | director |
+                      |__________|
+                      DIP=192.168.1.1 (eth0)
+                           |
+                           |
+          -----------------------------------
+          |                |                |
+          |                |                |
+   RIP1=192.168.1.2  RIP2=192.168.1.3   RIP3=192.168.1.4 (eth0)
+    _____________     _____________    _____________
+   |             |   |             |  |             |
+   | real-server |   | real-server |  | real-server |
+   |_____________|   |_____________|  |_____________|
+
+   VIP=192.168.1.110 VIP=192.168.1.110 VIP=192.168.1.110 (all tunl0,non-arping)
+          |                |                  |
+      (router)          (router)           (router)
+          |                |                  |
+          ----------------------------------------------> to client
+
+</PRE>
+<P>
+<P>
+<H2><A NAME="ss13.1">13.1 How VS-Tun works</A>
+</H2>
+
+<P>
+<P>Here's part of the rc.lvs_dr script which configures the real-server with
+RIP=192.168.1.8
+<P>
+<PRE>
+     #setup servers for telnet
+     /sbin/ipvsadm -A -t 192.168.1.110:23 -s rr
+     /sbin/ipvsadm -a -t 192.168.1.110:23 -R 192.168.1.1 -i -w 1
+</PRE>
+<P>With VS-Tun, the target port numbers of incoming
+packets cannot be remapped. A request to port 23
+on the VIP will be forwarded to port 23 on a real-server,
+thus no port number is used for setting up the
+IP of the real-server.
+<P>
+<P>Here's the packet headers as the request is processed by VS-Tun.
+<P>
+<PRE>
+packet                  source        dest         data
+1. request from client  CIP:3456      VIP:23       -
+2. ipvsadm table:
+   director chooses server=RIP1, encapsulates into IPIP packet
+                        DIP           RIP1         IP datagram
+                                                   source=CIP:3456,
+                                                   dest=VIP:23,
+                                                   data= -
+3. real-server recovers IP datagram
+                        CIP:3456      VIP:23       -
+4. real-server looks up routing table, finds VIP is local,
+   processes request locally, generates reply
+                        VIP:23        CIP:3456     "login: "
+
+5. packet leaves real-server via default gw, not via DIP.
+</PRE>
+<P>For the verbally oriented...
+<P>A packet arrives for the VIP. The director looks up its tables
+and decides to send the connection to real-server_1. The director
+encapsulates the request packet in an IPIP datagram with
+DIP->RIP. The packet arrives at real-server1, the
+real-server recovers the original IP datagram, looks up its
+routing table, finds that the VIP (on an otherwise unused,
+non-arping and nonfunctional device) is local and processes the
+packet locally. A reply packet is generated with VIP:23->CIP:3456. 
+The real-server looks up its routing table and
+finds that a packet to CIP goes out its default gw (not to the
+DIP).
+<P>The tunl0 device does not arp with 2.0.36 kernels, but does with
+2.2.x kernels. 
+Go look up the section on the 
+<A HREF="LVS-HOWTO-3.html#arp_problem">arp problem</A>
+to see if you need to patch the kernel on the real-server.
+<P>
+<H2><A NAME="ss13.2">13.2 Configure VS-Tun</A>
+</H2>
+
+<P>
+<P>Edit the template lvs_tun.conf and run configure.
+<P>$ ./configure_lvs.pl lvs_nat.conf
+<P>Load the the parameters into the director and then the
+real-servers with the command
+<P>$ . ./etc/rc.d/rc.lvs_tun
+<P>(the script knows whether it is running on a real-server or the
+director).
+<P>(later put in /etc/rc.d or /etc/init.d and put mon_xxx.cf in
+/etc/mon)
+<P>check the output from ipvsadm, ifconfig -a and netstat -rn, to
+see that the services/IP's are correct. If not re-edit and re-run
+the script(s).
+<P>
+<H2><A NAME="ss13.3">13.3 Real-servers on different network(s) to director</A>
+</H2>
+
+<P>
+<P>If the real-server is on a different network to the director, then
+it will be replying with packets having a source address of the
+VIP. In this case the router will have to be programmed to pass
+packets in the outward direction with the source address of the
+VIP. This may be a problem with some firewalls as they will
+be forwarding packets with a source address not in their network.
+<P>
+<H2><A NAME="ss13.4">13.4 VS-Tun Questions</A>
+</H2>
+
+<P>
+<P>
+<PRE>
+> How does a packet get to a tunl device from a remote machine
+> without a MAC address?
+</PRE>
+<P>(Julian)
+<P>tunl, lo and dummy are used just to configure the VIP. We don't
+send any packets through these devices. The requests are delivered to the
+real servers using their real IP addresses. The director asks only
+about their real IP addresses using the VS configuration. Only their
+gateway asks about VIP but only the director must reply. When the
+packet is received in the real server it is delivered locally (not
+forwarded or dropped) due to configured VIP. This is the only role
+of these "dummy" interfaces: the kernel to treat the received packet
+as it is destined to our host (the real server). Nothing more. No IPIP
+encapsulations (for tunl), no MAC address definitions, nothing more.
+When we answer the request we use eth0. The tunl/lo/dummy is not
+selected as device for the outgoing packets. We have routes for
+eth0 (default gateway) which we use for the outgoing traffic.
+This is for DROUTE and TUNNEL mode.
+<P>
+<PRE>
+>If two linux boxes (not in an LVS) are joined by an IPIP tunnel and
+>there is no MAC address associated with the tunl0 devices at each
+>end of the link, then how do the packets get from one machine to
+>the other?
+</PRE>
+<P>Julian
+<P>The packets are encapsulated via IPIP and sent to the tunnel ends
+real IP where they are decapsulated again and appear on the tunl interface.
+You don't need a MAC address for point-to-point links, or 
+logical interfaces like tunnels.
+<P>
+<P>
+<HR>
+<A HREF="LVS-HOWTO-14.html">Next</A>
+<A HREF="LVS-HOWTO-12.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc13">Contents</A>
+</BODY>
+</HTML>

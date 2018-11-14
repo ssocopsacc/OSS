@@ -1,0 +1,13 @@
+#!/bin/sh
+# We use $1 as the argument in the TEST which will be the various IP's
+# of the real servers in the cluster.
+
+# Check for hack/defacements
+TEST=`lynx --dump http://$1/ | sum | grep -c 07268`
+
+if [ $TEST != "1" ]; then
+        echo "OK"
+else
+        echo "FAIL"
+	/bin/echo | mail pager@failure.company.com -s "NOTICE: $1 failed to provide web service"
+fi

@@ -1,0 +1,1796 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO: Misc/FAQ/Wisdom from the mailing list</TITLE>
+ <LINK HREF="LVS-HOWTO-21.html" REL=next>
+ <LINK HREF="LVS-HOWTO-19.html" REL=previous>
+ <LINK HREF="LVS-HOWTO.html#toc20" REL=contents>
+</HEAD>
+<BODY>
+<A HREF="LVS-HOWTO-21.html">Next</A>
+<A HREF="LVS-HOWTO-19.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc20">Contents</A>
+<HR>
+<H2><A NAME="Wisdom"></A> <A NAME="s20">20. Misc/FAQ/Wisdom from the mailing list</A></H2>
+
+<P>
+<P>These topics were too short or not central enough to LVS operation 
+to have their own section.
+<P>
+<H2><A NAME="ss20.1">20.1 Setting up an LVS with inetd</A>
+</H2>
+
+<P>
+<P>from Ratz<CODE>ratz@tac.ch</CODE>
+<P>We're going to set up a LVS cluster from scratch. 
+you need 
+<P>
+<UL>
+<LI>4 machines (2 real-server, 1 load balancer, 1 client) wired like described in
+various sketches throughout this howto.</LI>
+<LI>fun and some spare time (actually quite some if it doesn't work out the first
+time like described)</LI>
+</UL>
+<P>The goal is to set up an own loadbalanced tcp application. The application will
+consist of a own written shell script being invoked by inetd. As you might have
+guessed, security is very low priority, you should get the idea behind this. Of 
+course I should take xinetd and of course I should use a tcpwrapper and maybe
+even SecurID authentication but here the goal is to understand the fundamental
+design principals of a LVS cluster and its deploy. All instructions will be done
+as root.
+<P>Setting up the real-server
+<P>
+<PRE>
+Edit /etc/inetd.conf and add following line:
+lvs-test        stream  tcp     nowait  root    /usr/bin/lvs-info       lvs-info
+
+Edit /etc/services and add following line:
+lvs-test        31337/tcp               # supersecure lvs-test port
+</PRE>
+<P>Now you need to get inetd running. This is different for every Unix. So please 
+have a look at it yourself. You verify if it's running with 'ps ax|grep [i]netd'
+And to verify if it really runs this port you do a 'netstat -an|grep LISTEN' and
+if there is a line:
+<P>
+<PRE>
+tcp        0      0 0.0.0.0:31337           0.0.0.0:*               LISTEN
+</PRE>
+<P>you're one step closer to the truth. Now we have to supply the script that will
+be called if you connect to real-server# port 31337. So simply do this on your
+command line (copy 'n' paste):
+<P>
+<PRE>
+cat > /usr/bin/lvs-info &lt;&lt; EOF &amp;&amp; chmod 755 /usr/bin/lvs-info
+#!/bin/sh
+ 
+echo "This is a test of machine `ifconfig -a | grep HWaddr | awk '{print $1}'`"
+echo
+EOF
+</PRE>
+<P>Now you can test if it really works with telnet or netcat:
+<P>
+<PRE>
+telnet localhost 31337
+netcat localhost 31337
+</PRE>
+<P>This should spill out something like:
+<P>
+<PRE>
+hog:/ # netcat localhost 31337
+This is a test of machine 192.168.1.11
+
+hog:/ # 
+</PRE>
+<P>If it worked, do the same procedure to set up the second real-server.
+Now we're ready to set up the load balancer. These are the required commands to
+set it up for our example:
+<P>
+<PRE>
+ipvsadm -A -t 192.168.1.100:31337 -s wrr
+ipvsadm -a -t 192.168.1.100:31337 -r 192.168.1.11 -g -w 1
+ipvsadm -a -t 192.168.1.100:31337 -r 192.168.1.12 -g -w 1
+</PRE>
+<P>Check it with ipvsadm -L -n:
+<P>
+<PRE>
+hog:~ # ipvsadm -L -n
+IP Virtual Server version 0.9.14 (size=4096)
+Prot LocalAddress:Port Scheduler Flags
+  -> RemoteAddress:Port          Forward Weight ActiveConn InActConn
+TCP  192.168.1.100:31337 wrr
+  -> 192.168.1.12:31337          Route   1      0          0         
+  -> 192.168.1.11:31337          Route   1      0          0         
+hog:~ # 
+</PRE>
+<P>Now if you connect from outside with the client node to the VIP=192.168.1.100 
+you should get to one of the two real-server (presumably to &nbsp;.12) Reconnect to
+the VIP again an you should get to the other real-server. If so, be happy, if 
+not go back, check netstat -an, ifconfig -a, arp-problem, routing tables and so
+on ...
+<P>
+<H2><A NAME="ss20.2">20.2 How to bring down a real-server for maintenance (eg swap disks)</A>
+</H2>
+
+<P>
+<P>
+<PRE>
+>From Michael Sparks &lt;tt/sparks@mcc.ac.uk/
+
+> I want to use virtual server functionality to allow switching over
+> from one pool of server processes to another without an interruption
+> in service to clients.
+
+current real-servers : A,B,C
+servers to swap into the system instead  D,E,F
+
+* Add servers D,E,F into the system all with fairly high weights (perhaps
+ramping the weights up slowly so as not to hit them too hard:-)
+* Change the weights of servers A,B,C to 0.
+* All new traffic should now go to D,E,F
+* When the number of connections through A,B,C reaches 0, remove them from
+the service. This can take time I know but...
+</PRE>
+<P>from Joe
+<P>A planned feature for ipvsadm will be to give a real-server a
+weight of 0 (now implemented). This real-server will not be sent any new connections
+and will continue serving its current connections till they
+close. You may have to wait a while if a user is downloading a
+40M file from the real-server.
+<P>
+<H2><A NAME="ss20.3">20.3 Howto turn your single node ftp/http server into an LVS without taking it off-line</A>
+</H2>
+
+<P>
+<P>eg if you want to test LVS on your BIG Sunserver and how 
+to restore an LVS to a single node server again.
+<P>
+<PRE>
+current ftp server:        standalone  A
+
+planned LVS (using VS-DR): real-server A
+                           director    Z
+</PRE>
+<P>Setup the LVS in the normal way with the director's VIP being a
+new IP for the network. The IP of the standalone server will now
+also be the IP for the real-server. You can access the real-server
+via the VIP while the outside users continue to connect to the
+original IP of A.  When you are happy that the VIP gives the
+right service, change the DNS IP of your ftp site to the VIP.
+Over the next 24hrs as the new DNS information is propagated to
+the outside world, users will change over to the VIP to access
+the server.
+<P>To expand the number of servers (to A, B,...), add another server
+with duplicated files, add an extra entry into the director's
+tables with ipvsadm.
+<P>To restore - in your DNS, change the IP for the service to the
+real-server IP. When no-one is accessing the VIP anymore, unplug
+the director.
+<P>
+<H2><A NAME="ss20.4">20.4 Other projects like LVS - Beowulf</A>
+</H2>
+
+<P>
+<P>The difference between a beowulf and an LVS:
+<P>The Beowulf project has to do with processor clustering over a
+network -- parallel computing... Basically putting 64 nodes up
+and running that all are a part of a collective of resources.
+Like SMP -- but between a whole bunch of machines with a fast
+ethernet as a backplane.
+<P>LVS, however, is about load-balancing on a network. Someone puts
+up a load balancer in front of a cluster of servers. Each one of
+those servers is independent and knows nothing about the rest of
+the servers in the farm. All requests for services go to the load
+balancer first. That load balancer then distributes requests to
+each server. Those servers respond as if the request came
+straight to them in the first place. So -- with the more servers
+one adds -- the less load goes to each server.
+<P>A person might go to a web site that is load balanced, and their
+requests would be balanced between four different machines. (Or
+perhaps all of their requests would go to one machine, and the
+next person's request would go to another machine)
+<P>However, a person who used a Beowulf system would actually be
+using one processing collaborative that was made up of multiple
+computers...
+<P>I know that's not the best explanation of each, and I apologize
+for that, but I hope it at least starts to make things a little
+clearer. Both projects could be expanded on to a great extent,
+but that might just confuse things farther.
+<P>(Joe) -
+<P>both use several (or a lot of) nodes.
+<P>A beowulf is a collection of nodes working on a single
+computation.  The computation is broken into small pieces and
+passed to a node, which replies with the result. Eventually the
+whole computation is done.  THe beowulf usually has a single user
+and the computations can run for weeks.
+<P>An LVS is a group of machines offering a service to a client. A
+dispatcher connects the client to a particular server for the
+request. When the request is completed, the dispatcher removes
+the connection between the client and server. The next request
+from the same client may go to a different server but the client
+cannot tell which server it has connected to. The connection
+between client and server may only be seconds long
+<P>from a posting to the beowulf mailing list by Alan Heirich -
+<P>Thomas Sterling and Donald Becker made "Beowulf" a registered
+service mark with specific requirements for use:
+<P>
+<PRE>
+-- Beowulf is a cluster
+-- the cluster runs Linux
+-- the O/S and driver software are open source
+-- the CPU is multiple sourced (currently, Intel and Alpha)
+</PRE>
+<P>I assume they did this to prevent profit-hungry vendors from
+abusing this term; can't you just imagine Micro$oft pushing a
+"Beowulf" NT-cluster?
+<P>(Joe - I looked up the Registered Service Marks on the internet
+and Beowulf is not one of them.)
+<P>(Wensong)
+Beowulf is for parallel computing, Linux Virtual Server is for
+scalable network services.
+<P>They are quite different now. However, I think they may be
+unified under "single system image" some day. In the "single
+system image", every node can see a single system image (the same
+memory space, the same process space, the same external storage),
+and the processes/threads can be transparently migrated to other
+nodes in order to achieve load balance in the cluster. All the
+processes are checkpointed, they can be restarted in the node or
+the others if they fails, full fault tolerant can be made here.
+It will be easy for programmers to code because of single space,
+they don't need to statically partition jobs to different sites
+and let them communicate through PVM or MPI. They just need
+identify the parallelism of his scientific application, and fork
+the processes or generate threads, because processes/threads will
+be automatically load balanced on different nodes. For network
+services, the service daemons just need to fork the processes or
+generates threads, it is quite simple. I think it needs lots of
+investigation in how to implement these mechanisms and make the
+overhead as low as possible.
+<P>What Linux Virtual Server has done is very simple, Single IP
+Address, in which parallel services on different nodes is
+appeared as a virtual service on a single IP address. The
+different nodes have their own space, it is far from "single
+system image". It means that we have a long way to run. :)
+<P>
+<H2><A NAME="ss20.5">20.5 Projects like LVS - Eddie</A>
+</H2>
+
+<P>
+<P>Eddie http://www.eddieware.org
+<P>(Jacek Kujawa <CODE>blady@cnt.pl</CODE>)
+Eddie is a load balancing software, using NAT (only NAT), for
+webservers, written in language erlang. Eddie include intelligent
+HTTP gateway and Enhanced DNS.
+<P>(Joe)
+Erlang is a language for writing distrubuted applications.
+<P>
+<H2><A NAME="ss20.6">20.6 Troubles with tulip cards</A>
+</H2>
+
+<P>
+<P>(Joe - I don't know if this is still a problem)
+<P>
+<PRE>
+Date: Wed, 05 May 1999 16:45:34 +0100
+From: John Connett &lt;tt/jrc@art-render.com/
+Subject: Re: Configuration help
+
+John Connett wrote:
+> John Connett wrote:
+> > Any suggestions as to how to narrow it down?  I have an Intel
+> > EtherExpress PRO 100+ and a 3COM 3c905B which I could try instead of the
+> > KNE 100TX to see if that makes a difference.
+>
+> A tiny light at the end of the tunnel!  Just tried an Intel EtherExpress
+> PRO 100+ and it works!  Unfortunately, the hardware is fixed for the
+> application I am working on and has to use a single Kingston KNE 100TX
+> NIC ...
+</PRE>
+<P>Some more information.  The LocalNode problem has been observed
+with both the old style (21140-AF) and the new style (21143-PD)
+of Kingston KNE 100TX NIC.  This suggests that there is a good
+chance that it will be seen with other "tulip" based NICs.  It
+has been observed with both the "v0.90 10/20/98" and the "v0.91
+4/14/99" versions of tulip.c.
+<P>I have upgraded to vs-0.9 and the behaviour remains the same: the
+EtherExpress PRO 100+ works; the Kingston KNE 100TX doesn't work.
+<P>It is somewhat surprising that the choice of NIC should have this
+impact on the LocalNode behaviour but work successfully on
+connections to slave servers.
+<P>Any suggestions as to how I can identify the feature (or bug) in
+the tulip driver would be gratefully received.  If it is a bug I
+will raise it on the tulip mailing list.
+<P>
+<P>
+<P>
+<H2><A NAME="ss20.7">20.7 About PPC (persistent port connection) (for 2.2.12 kernels)</A>
+- was PCC (persistent client connection) for previous kernels</H2>
+
+<P>
+<P>PPC is used for clients who must maintain a session with the same
+real-server throughout a session (eg for various SSL protocols, to
+an http server sending 
+<A HREF="LVS-HOWTO-10.html#cookie">cookies</A>...). The default session timeout
+is 5mins (ip_vs_pcc.h). PCC (kernel &lt; 2.2.12) was removed in
+2.2.12 and has resurfaced as a more general persistance feature
+called persistant port.
+<P>PCC connects (some or all) ports from a client IP through to the
+same ports on a single real-server (the real-server is selected on
+the first connection, after than all subsequent port requests
+from the same IP go to the same real-server). With persistant
+port, the persistant connection is on a port by port basis and
+not by IP. If persistant port is called with a port of "0" then
+the connection will be the same as PCC.
+<P>here's the syntax for 2.2.12 kernels
+<P>(Wensong)
+To use persistent port, the commands are as follows:
+<PRE>
+
+        ipvsadm -A -t &lt;VIP>:&lt;port> [-s &lt;scheduler>] -p
+        ipvsadm -a -t &lt;VIP>:&lt;port> -R &lt;real server> ...
+        ...
+</PRE>
+<P>if port=0 then all ports from the CIP will be mapped through to
+the real-server (the old PCC behaviour). If port=443, then only
+port 443 from the CIP will be mapped through to the real-server as
+a persistant connection.
+<P>If the virtual service port is set persistent, connections from
+the same clients are gauranteed to direct to the same server.
+When a client sends request for the service at the first time,
+the load balancer (director) selects a server by the scheduling
+method and creates a connection and the template. Then, the
+following connections from the same client will be forwarded to
+the same server according to the template in the specified time.
+<P>The source address of an incoming packet is used to lookup
+connection template.
+<P>from Peter Kese (who implemented pcc)
+<P>PCC (persistent client connection) scheduling algorithm needs
+some more explanation. When PCC scheduling is used, the
+connections are scheduled on a per client base instead of per
+connection. That means, the scheduling is performed only the
+first time a certain client connects to the virtual IP. Once the
+real server is chosen, all further connections from the same
+client will be forwarded to the same real server.
+<P>PCC scheduling algorithm can either be attached to a certain port
+or to the server as whole. By setting the service port to 0
+(example: ipvscfg -A -t 192.168.1.10:0 -s pcc) the scheduler will
+accept all incoming connections and will schedule them to the
+same real server no matter what the port number is.
+<P>As Wensong had noted before, the PCC scheduling algorithm might
+produce some imbalance of load on real servers. This happens
+because the number of connections established by clients might
+vary a lot. (There are some large companies for example, that use
+only one IP address for accessing the internet. Or think about
+what happens when a search engine comes to scan the web site in
+order to index the pages.) On the other hand, the PCC scheduler
+resolves some problems with certain protocols (e.g. FTP) so I
+think it is good to have it.
+<P>and a comment about load balancing using pcc/ssl. (the problem:
+once someone comes in from aol.com to one of the real-servers, all
+subsequent connections from aol.com will also go to the same
+server) -
+<P>(Lars)
+Lets examine what happens now with SSL session comeing in from a
+big proxy, like AOL. Since they are all from the same host, they
+get forwarded to the same server - *thud*.
+<P>Now, SSL carries a "session id" which identifies all requests
+from a browser.  This can be used to separate the multiple SSL
+sessions, even if comeing in from one big proxy and load balance
+them.
+<P>
+<PRE>
+> > SSL connections will not come from the same port, since the clients open
+> > many of them at once, just like with normal http.
+
+> so would we be able to differentiate all the people coming from aol by
+> the port number?
+</PRE>
+<P>No. A client may open multiple SSL connections at once, which
+obviously will not come from the same port - but I think they
+will come in with the same SSL id.
+<P>Lars Marowsky-Brie
+<P>and from Wensong
+<P>
+<PRE>
+> But like I said: really hard to get working, and even harder to get right ;-)
+>
+> (At least I think so)
+</PRE>
+<P>No, not really! As I know, the PCC (Persistent Client Connection)
+scheduling in the VS patch for kernel 2.2 can solve connection
+affinity problem in SSL.
+<P>When a SSL connection is made (crypted with server's public key),
+port 443 for secure Web servers and port 465 for secure mail
+server, a key (session id) must be generated and exchanged
+between the server and the client. The later connections from the
+same client are granted by the server in the life span of the SSL
+key.
+<P>So, the PCC scheduling can make sure that once SSL "session id"
+is exchanged between the server and the client, the later
+connections from the same client will be directed to the same
+server in the life span of the SSL key.
+<P>However, I haven't tested it myself. I will download ApacheSSL
+and test it sometime. Anyone who have tested or are going to test
+it, please let me know the result, no matter it is good or bad.
+:-)
+<P>(a bit later)
+<P>
+<PRE>
+> I tested LVS with servers running Apache-SSL.
+> LVS uses the VS patch for kernel 2.2.9, and uses
+> the PCC scheduling. It worked without any problem.
+</PRE>
+<P>(some more)
+<P>SSL is a little bit different.
+<P>In use, the client will send a connection request to the server.
+The server will return a signed digital certificate. The client
+then authenticates the certificate using the digital signature
+and the public key of the CA.
+<P>If the certificate is not authentic the connection is dropped. If
+it is authentic then the client sends a session key (such as a)
+and encrypts the data using the servers public key. This ensures
+only the server can read it since decrypting requires knowing the
+server private key.  The server sends its session key (such as b)
+and encrypts with its private key, the client decrypt it with
+server's public key and get b.
+<P>Since both the client and the server get a and b, they can
+generate the same session key based on a and b. Once they have
+the session key, they can use this to encrypt and decrypt data in
+communication. Since the data sent between the client and server
+is encrypted, it can't be read by anyone else.
+<P>Since the key exchange and generating is very time-consuming, for
+performance reasons, once the SSL session key is exchanged and
+generated in a TCP connection, other TCP connections can also use
+this session key between the client and the server in the
+life-span of the key.
+<P>So, we have make the connections from the same client is sent to
+the same server in the life-span of the key. That's why the PCC
+scheduling is used here.
+<P>About longer timeouts
+From: felix k sheng <CODE>felix@deasil.com</CODE> and Ted Pavlic
+<P>
+<PRE>
+>> 2. The PCC feature....can I set the permanent connection for something
+>else
+>> than the default value ( I need to maintain the client on the same server
+>> for 30 minutes at maximum) ?
+>
+>If people connecting to your application will contact your web server at
+>least once every five minutes, setting that value to five minutes is fine.
+>If you expect people to be idle for up to thirty minutes before contacting
+>the server again, then feel free to change it to thirty minutes. Basically
+>remember that the clock is reset every time they contact the server again.
+>Persistence lasts for as long as it's needed. It only dies after the amount
+>of seconds in that value passes without a connection from that address.
+>
+>So if you really want to change it to thirty minutes, check out
+>ip_vs_pcc.h -- there should be a constant that defines how many seconds to
+>keep the entry in the table. (I don't have access to a machine with IPVS on
+>it at this location for me to give you anything more precise)
+</PRE>
+<P>I think this 30 minute idea is a web specific time out period.
+That is, default timeout's for 
+<A HREF="LVS-HOWTO-10.html#cookie">cookies</A> are 30 minutes, so many
+web sites use that value as the length of a given web "session".
+So if a user hits your site, stops and does nothing for 29
+minutes, and then hits your site again, most places will consider
+that the same session - the same session cookies will still be in
+place.  So it would probably be a nice to have them going to the
+same server.
+<P>
+<H2><A NAME="ss20.8">20.8 Related to PPC - Sticky connections</A>
+</H2>
+
+<P>
+<P>(Wensong)
+<P>Since there are many messages about passive ftp problem and
+sticky connection problem, I'd better send a separate message to
+make it clear.
+<P>In LinuxDirector (by default), we have assumed that each network
+connection is independent of every other connection, so that each
+connection can be assigned to a server independently of any past,
+present or future assignments. However, there are times that two
+connections from the same client must be assigned to the same
+server either for functional or for performance reasons.
+<P>FTP is an example for a functional requirement for connection
+affinity.  The client establishs two connections to the server,
+one is a control connection (port 21) to exchange command
+information, the other is a data connection (usually port 20)
+that transfer bulk data. For active FTP, the client informs the
+server the port that it listens to, the data connection is
+initiated by the server from the server's port 20 and the
+client's port. LinuxDirector could examine the packet coming from
+clients for the port that client listens to, and create any entry
+in the hash table for the coming data connection. But for passive
+FTP, the server tells the clients the port that it listens to,
+the client initiates the data connection connectint to that port.
+For the VS-Tunneling and the VS-DRouting, LinuxDirector is only
+on the client-to-server half connection, so it is imposssible for
+LinuxDirector to get the port from the packet that goes to the
+client directly.
+<P>SSL (Secure Socket Layer) is an example of a protocol that has
+connection affinity between a given client and a particular
+server.  When a SSL connection is made, port 443 for secure Web
+servers and port 465 for secure mail server, a key for the
+connection must be chosen and exchanged. The later connections
+from the same client are granted by the server in the life span
+of the SSL key.
+<P>Our current solution to client affinity is to add persistent
+client connection scheduling in LinuxDirector. In the PCC
+scheduling, when a client first access the service, LinuxDirector
+will create a connection template between the give client and the
+selected server, then create an entry for the connection in the
+hash table. The template expires in a configurable time, and the
+template won't expire if it has its connections. The connections
+for any port from the client will send to the server before the
+template expires. Although the PCC scheduling may cause slight
+load imbalance among servers, it is a good solution to connection
+affinity.
+<P>The configuration example of PCC scheduling is as follows:
+<PRE>
+    ipvsadm -A -t &lt;VIP>:0 -s pcc
+    ipvsadm -a -t &lt;VIP>:0 -R &lt;your server>
+</PRE>
+<P>BTW, PCC should not be considered as a scheduling algorithm in
+concept. It should be a feature of virtual service port, the port
+is persistent or not. I will write some codes later to let user
+to specify whether port is persistent or not.
+<P>(and what if a real-server holding a sticky connection crashes?)
+<P>From: Ted Pavlic <CODE>tpavlic_list@netwalk.com</CODE>
+<P>Is this a bug or a feature of the PCC scheduling...
+<P>A person connects to the virtual server, gets direct routed to a
+machine. Before the time set to expire persistent connections,
+that real machine dies. mon sees that the machine died, and
+deletes the real server entries until it comes back up.
+<P>But now that same person tries to connect to the virtual server
+again, and PCC *STILL* schedules them for the non-existent real
+server that is currently down. Is that a feature? I mean -- I can
+see how it would be good for small outages... so that a machine
+could come back up really quick and keep serving its old
+requests... YET... For long outages those particular people will
+have no luck.
+<P>(Wensong)
+> Is this a bug or a feature of the PCC scheduling...
+<P>I don't know how to answer this. :-)
+<P>You can set the timeout of template masq entry into a small
+number now.  It will be expired soon.
+<P>Or, I will add some codes to let each real server entry keep a
+list of its template masq entries, remove those template masq
+entries if the real server entry is deleted.
+<P>
+<PRE>
+> To me, this seems most sensible. Lowering the timeouts has other effects,
+> affecting general session persistence...
+(Ted)
+</PRE>
+<P>I agree with this. This was what I was hoping for when I sent the
+original message. I figure, if the server the person was
+connecting to went down, any persistence wouldn't be that useful
+when the server came back up. There might be temporary files in
+existence on that server that don't exist on another server, but
+otherwise... FTP or SSL or anything like that -- it might as well
+be brought up anew on another server.
+<P>Plus, any protocol that requires a persistent connection is
+probably one that the user will access frequently during one
+session. It makes more sense to bring that protocol up on another
+server than waiting for the old server to come back up -- will be
+more transparent to the user. (Even though they may have to
+completely re-connect once)
+<P>So, yes, deleting the entry when a real server goes down sounds
+like the best choice. I think you'll find most other load
+balancers do something similar to this.
+<P>a similar question by Andres Reiner <CODE>areiner@nextron.ch</CODE>
+<P>
+<PRE>
+> I found some strange behaviour using 'mon' for the
+> high-availability. If a server goes down it is correctly removed from
+> the routing table. BUT if a client did a request prior to the server's
+> failure, it will still be directed to the failed server afterwards. I
+> guess this got something to do with the persistent connection setting
+> (which is used for the cold fusion applications/session variables).
+>
+> In my understanding the LVS should, if a routing entry is deleted, no
+> longer direct clients to the failed server even if the persistent
+> connection setting is used.
+>
+> Is there some option I missed or is it a bug ?
+</PRE>
+<P>No, you didn't miss anything and it is not a bug either. :)
+<P>In the current design of LVS, the connection won't be drastically
+removed but silently drop the packet once the destination of the
+connection is down, because monitering software may marks the server
+temporary down when the server is too busy or the monitering software
+makes some errors. When the server is up, then the connection continues.
+If server is not up for a while, then the client will timeout. One thing
+is gauranteed that no new connections will be assigned to a server when
+it is down. When the client reestablishs the connection (e.g. press
+reload/refresh in the browser), a new server will be assigned.
+Wensong
+<P>
+<H2><A NAME="thundering_herd"></A> <A NAME="ss20.9">20.9 Thundering herd problem, when down machine(s) come on line</A>
+</H2>
+
+<P>
+<P>(now handled by code added to the scheduler)
+<P>From: Christopher Seawood <CODE>cls@aureate.com</CODE>
+<P>LVS seems to work great until a server goes down (this is where
+mon comes in). Here's a couple of things to keep in mind.  If
+you're using the Weighted Round-Robin scheduler, then LVS will
+still attempt to hit the server once it goes down. If you're
+using the Least Connections scheduler, then all new connections
+will be directed to the down server because it has 0 connections.
+You'd think using mon would fix these problem but not in all
+cases.
+<P>Adding mon to the LC setup didn't help matters much. I took one
+of three servers out of the loop and waited for mon to drop the
+entry.  That worked great.  When I started the server back up,
+mon added the entry.  During that time, the 2 running servers had
+gathered about 1000 connections apiece.  When the third server
+came back up, it immediately received all of the new connections.
+It kept receiving all of the connections until it had an equal
+number of connections with the other servers (which by this
+time...a minute or so later...had fallen to &nbsp;700). By this time,
+the 3rd server had been restarted after due to triggering a high
+load sensor also monitoring the machine (a necessary evil or so
+I'm told).  At this point, I dropped back to using WRR as I could
+envision the cycle repeating itself indefinitely.
+<P>
+<H2><A NAME="ss20.10">20.10 on the need for extended testing</A>
+</H2>
+
+<P>
+<P>(this must have been solved,
+no-one is complaining about memory leaks now :-)
+<P>From: Jerry Glomph Black <CODE>black@real.com</CODE>
+<P>We have successfully used 2.0.36-vs (direct routing method), but
+it does fail at extremely high loads. Seems like a cumulative
+effect, after about a billion or so packets forwarded. Some kind
+of kernel memory leak, I'd guess.
+<P>
+<H2><A NAME="ss20.11">20.11 loopback on Solaris</A>
+</H2>
+
+<P>
+<P>The thing I have found out is that on Solaris 2.6, and
+probably other versions of Solaris, you have to to some magic to
+get the loopback alias setup.  You must run the following
+commands one at a time:
+<P>
+<PRE>
+ifconfig lo0:1 &lt;VIP>
+ifconfig lo0:1 &lt;VIP> &lt;VIP>
+ifconfig lo0:1 netmask 255.255.255.255
+ifconfig lo0:1 up
+</PRE>
+<P>Which works well and is actually a pointopoint link like ppp
+which must be the way Solaris defines aliases to the lo
+interface. It will not let you do this all at once, just each
+step at a time or you have to start over from scratch on the
+interface.
+<P>
+<PRE>
+Chris Kennedy
+I-Land Internet Services
+&lt;tt/ckennedy@iland.net/
+</PRE>
+<P>
+<H2><A NAME="ss20.12">20.12 Having one director handling multiple LVS sites</A>
+</H2>
+
+<P>
+<P>
+<PRE>
+From: James CE Johnson &lt;tt/jjohnson@mobsec.com/
+Subject: Re: Can VS handle more than one site per director?
+
+Keith Rowland wrote:
+
+> Can I use Virtual Server to host multiple domains on the
+> cluster? Can VS be setup to respond to multiple 10-20 different
+> IP addresses and use the clusters to reposnd to any one of them
+> with the proper web directory.
+
+If I understand the question correctly, then the answer is yes :-)
+
+I have one system that has two IP addresses and responds to two names:
+  foo.mydomain.com  A.B.C.foo  eth1
+  bar.mydomain.com  A.B.C.bar  eth1:0
+
+On that system (kernel 2.0.36 BTW) I have LVS setup as:
+  ippfvsadm -A -t A.B.C.foo:80 -R 192.168.42.50:80
+  ippfvsadm -A -t A.B.C.bar:80 -R 192.168.42.100:80
+</PRE>
+<P>To make matters even more confusing, 192.168.42.(50|100) are
+actually one system where eth0 is 192.168.42.100 and eth0:0 is
+192.168.42.50.  We'll call that 'node'.
+<P>Apache on 'node' is setup to serve foo.mydomain.com on ...100 and
+bar.mydomain.com on ...50.
+<P>It took me a while to sort it out but it all works quite nicely.
+I can easily move bar.mydomain.com to another node within the
+cluster by simply changing the ippfvsadm setup on the externally
+addressable node.
+<P>
+<H2><A NAME="ss20.13">20.13 Running multiple directors (each with their own IP)</A>
+</H2>
+
+<P>
+<P>On a normal LVS (one director, multiple real-servers being failed-over
+with mon), the single director is a SPOF (single point of failure).
+Director failure can be handled (in principle) with heartbeat, but
+no-one is doing this yet. In the meantime, you can have two directors
+each with their own VIP known to the users and set them up to talk to
+the same set of real-servers. (You can have two VIP's on one director
+box too). (The configure.pl script doesn't handle this yet.)
+<P>(Michael Sparks <CODE>michael.sparks@mcc.ac.uk</CODE>
+<PRE>
+> Also has anyone tried this using 2 or more masters - each master with it's
+> own IP? (*) From what I can see theoretically all you should have to do is
+> have one master on IP X, tunneled to clients who recieve stuff via tunl0,
+> and another master on IP Y, tunneled to clients on tunl1 - except when I
+> just tried doing that I can't get the kernel to accept the concept of a
+> tunl1... Is this a limitation of the IPIP module ???
+</PRE>
+<P>(Stephen D. WIlliams <CODE>sdw@lig.net</CODE>)
+Do aliasing. I don't see a need for tunl1. In fact, I just throw
+a dummy address on tunl0 and do everything with tunl0:0, etc.
+<P>We plan to run at least two LinuxDirector/DR systems with
+failover for moving the two (or more) public IP's between the
+systems. We also use aliased, movable IP's for the real server
+addresses so that they can failover also.
+<P>
+<H2><A NAME="clients_on_real-servers"></A> <A NAME="ss20.14">20.14 Running clients (eg telnet) on real-servers</A>
+</H2>
+
+<P>
+<P>There are two types of clients on real-servers from the point of view of LVS.
+<P>
+<UL>
+<LI>Clients which have src_addr=RIP (eg telnet run from the command line). These
+are simpler to handle.</LI>
+<LI>Clients which need to have src_addr=VIP (but call from RIP). 
+These are usually call-backs from the LVS'ed service to a demon on the LVS client. 
+Handling these is somewhat problematic. 
+The instances that we know about of this.
+<UL>
+<LI> 
+<A HREF="LVS-HOWTO-16.html#authd">authd</A></LI>
+<LI> 
+<A HREF="LVS-HOWTO-10.html#rshd">rshd</A></LI>
+<LI> 
+<A HREF="LVS-HOWTO-10.html#passive_ftp">passive ftp</A></LI>
+</UL>
+</LI>
+</UL>
+<P>Both types of clients require the same understanding of LVS, but because the
+first case is simple, it is discussed here. 
+The second case has all sorts of ramifications for LVS and for that
+reason is discussed in the 
+<A HREF="LVS-HOWTO-16.html#authd">section on authd</A>.
+<P>You might have valid reasons for running clients on real-servers, 
+e.g. so that the sysadmin could telnet to a remote site. 
+The way to allow clients on the real-servers to connect to outside
+servers is to configure these requests so that they are 
+independant of the LVS setup 
+(you do have to use the network and default gw set by the LVS).
+The solution is to NAT the client requests. 
+<P>
+<H3>client requests from real-servers in a VS-NAT LVS</H3>
+
+<P>
+<P>This is simple 
+<P>
+<UL>
+<LI>the director is already the default gw for the real-server 
+(a requirement for NAT). </LI>
+<LI>each real-server is replying to LVS packets with its RIP, which is unique
+(there is no VIP on the real-servers with VS-NAT). 
+NAT'ed client requests will return to the correct real-server.</LI>
+</UL>
+<P>Here's the command to run on a 2.2.x director to allow 
+realserver1 to telnet to the outside world.
+<P>
+<PRE>
+director:# ipchains -A forward -p tcp -j MASQ -s realserver1 telnet -d 0.0.0.0/0 
+</PRE>
+<P>You may have to turn off icmp redirects, 
+if you have a 
+<A HREF="LVS-HOWTO-11.html#one_network">one network VS-NAT</A>.
+<P>
+<PRE>
+director: #echo 0 > /proc/sys/net/ipv4/conf/all/send_redirects
+director: #echo 0 > /proc/sys/net/ipv4/conf/eth0/send_redirects
+</PRE>
+<P>
+<P>After running this command you can telnet from the real-servers.
+You can do this even if telnet is an LVS'ed service, 
+since the telnet client and demon operate independantly of each other. 
+You can use NAT the rshd and identd clients in the same way (replace telnet with rsh/identd
+and clients on the real-server can connect to their demons on outside machines).
+<P>
+<H3>client requests from real-servers in VS-DR or VS-Tun LVS's</H3>
+
+<P>
+<P>In general this has not been solved. Calls initiated by the identd client
+on a real-server will come from the VIP, not the RIP. Some hare-brained
+schemes have been tried but did not work (NAT'ing out the request from the
+VIP, so that it emerges from the real-server with src_addr=RIP and then
+NAT'ing the packet again on the director, so it emerges with src_addr=VIP).
+<P>There are specific solutions
+<P>In VS-DR/VS-Tun, if the client and RIP are on the same network. Usually 
+the RIP's on VS-DR real-servers are private addresses. However if the
+LVS clients and the LVS are all local and on the same network, this will work.
+<P>Clients not associated with the LVS'ed services (ie telnet even if telnetd
+is LVSed, but not authd or rshd) can still be NAT'ed out, since the 
+connect request will come from the RIP and not the VIP. 
+Since the default gw for the real-server in VS-DR is not the director,
+you can handle this 2 ways
+<P>
+<UL>
+<LI>do the NAT'ing on the default gw box (you may not have access to this machine)</LI>
+<LI>make the director the default gw for packets from the RIP
+(see setting up 
+<A HREF="#NAT_with_VS-DR">NAT for clients on VS-DR</A>). </LI>
+</UL>
+<P>
+<H2><A NAME="NAT_with_VS-DR"></A> <A NAME="ss20.15">20.15 Setting up NAT clients on VS-DR real-servers</A>
+</H2>
+
+<P>
+<P>Here's Julian's recipe (25 Sep 2000) 
+for setting up NAT for clients on real-servers
+in a VS-DR LVS.
+<P>
+<P>Settings for the real server(s), send all packets from the RIP network (RIPN)
+to the DIP (an IP on the director in the RIPN). 
+<P>
+<PRE>
+real-server: #ip rule add prio 100 from RIPN/24 table 100
+real-server: #ip route add table 100 0/0 via DIP dev eth0
+</PRE>
+<P>The director has to to listen on DIP (if it doesn't already), 
+not send ICMP redirects from the DIP ethernet device and 
+masquerade packets from the RIPN.
+<P>
+<PRE>
+director: #ifconfig eth0:1 DIP netmask 255.255.255.0
+director: #echo 0 > /proc/sys/net/ipv4/conf/all/send_redirects
+director: #echo 0 > /proc/sys/net/ipv4/conf/eth0/send_redirects
+director: #ipchains -A forward -s RIPN/24 -j MASQ
+</PRE>
+<P>
+<H2><A NAME="timeout"></A> <A NAME="ss20.16">20.16 Timeouts</A>
+</H2>
+
+<P>
+<P>
+<H3>TCP/UDP</H3>
+
+<P>
+<P>(from Julian, 28 Jun 00)
+LVS uses the default timeouts for idle connections set by
+MASQ for (EST/FIN/UDP) of 15,2,5 mins. These values are
+fine for ftp or http, but if you have people sitting on
+a LVS telnet connection they won't like the 15min timeout.
+You can't read these timeout values, but you can set them 
+with ipchains.
+<P>$ipchains -M -S 36000 0 0
+<P>will set the timeout for established connections to 10hrs,
+while the other two 0 values will leave
+the FIN and UDP timeouts unchanged.
+<P>The timeouts are set in /usr/src/linux/include/net/ip_masq.h
+<P>
+<H3>director with many entries in FIN state</H3>
+
+<P>
+<P>With the FIN timeout being about 1 min (2.2.x kernels),
+if most of your connections are non-persistent http (only
+taking 1 sec or so), most of your connections will be in the
+InActConn state.
+<P>Date: Tue, 20 Mar 2001, Hendrik Thiel wrote:
+<P>> we are using a lvs in NAT Mode and everything works fine ...
+> Probably, the only Problem seems to be the huge number of  (idle)
+> Connection Entries.
+>
+> ipvsadm shows a lot of inActConn (more than 10000 entries per
+> Realserver)  entries.
+> ipchains -M -L -n shows that these connections last 2 minutes.
+> Is it possible to reduce the time to keep the Masquerading Table
+> small? e.g. 10 seconds ...
+<P>(Joe - you can use netstat -M instead of ipchains -M -L)
+<P>(Julian)
+<P>One entry occupies 128 bytes. 10k entries mean 1.28MB memory.
+This is not a lot of memory and may not be a problem.
+<P>To reduce the number of entries in the ipchains table, you 
+can reduce the timeout values.
+You can edit the TIME_WAIT, FIN_WAIT values in ip_masq.c, or enable the 
+<A HREF="http://www.linux-vs.org/defense.html">secure_tcp strategy</A>
+and alter the proc values there. 
+FIN_WAIT can also be changed with ipchains.
+<P>
+<H3>ICMP</H3>
+
+<P>
+<P>On Wed, 14 Feb 2001
+From: Laurent Lefoll <CODE>Laurent.Lefoll@mobileway.com</CODE>
+<PRE>
+> what is the usefulness of the ICMP packets that are sent when
+> new packets arrives for a TCP connection that timed out for in LVS box ? I
+> understand obviously for UDP but I don't see their role for a TCP connection...
+</PRE>
+<P>(Julian)
+<P>I assume your question is about the reply after ip_vs_lookup_real_service.
+<P>It is used to remove the open request in SYN_RECV state in the
+real server. LVS replies for more states and may be some OSes report
+them as soft errors (Linux), others can report them as hard errors,
+who knows.
+<P>
+<PRE>
+> it's about ICMP packets from a VS-NAT director to the client.
+> For example, a client accesses a TCP virtual service and then stops sending data
+> for a long time, enough for the LVS entry to expire. When the client try to send
+> new data over this same TCP connection the LVS box sends ICMP (port unreachable)
+> packets to the client. For a TCP connection how do these ICMP packets 
+> "influence" the client ? It will stop sending packets to this expired (for the
+> LVS box...) TCP connection only after its own timeouts, doesn't it ?
+</PRE>
+<P>By default TCP replies RST to the client when there is no
+existing socket. 
+LVS does not keep info for already expired connections
+and so we can only reply with an ICMP rather than sending a TCP RST. 
+(If we implement
+TCP RST replies, we could reply TCP RST instead of ICMP).
+<P>What does the client do with this ICMP packet?
+By default, the application does not listen for ICMP errors 
+and they are reported as soft errors after a TCP timeout 
+and according to the TCP state. 
+Linux at least allows the application to listen for such ICMP replies. 
+The application can register for these ICMP errors and 
+detect them immediately as they are received by the socket.
+It is not clear whether it is a good idea to accept such
+information from untrusted sources. 
+ICMP errors are reported immediately for some TCP (SYN) states.
+<P>
+<H2><A NAME="ss20.17">20.17 tcpdump</A>
+</H2>
+
+<P>
+<P>On Fri, 16 Mar 2001, Joseph Mack wrote:
+<P>
+<PRE>
+> I'm looking at packets after they've been accepted by TP
+> and I'm using (among other things) tcpdump.
+>
+> Where in the netfilter chain does tcpdump look at incoming
+> and outgoing packets? When they are put on/received from
+> the wire? After the INPUT, before the OUTPUT chain...?
+</PRE>
+<P>(Julian)
+<P>Before/after any netfilter chains. Such programs hook at
+packet level before/after the IP stack just before/after the packet
+is received/must be sent from/by the device. They work for
+other protocols. tcpdump is a packet receiver just like the
+IP stack is in the network stack.
+<P>
+<H2><A NAME="ss20.18">20.18 Bringing down aliased devices </A>
+</H2>
+
+<P>
+<P>(without bringing them all down)
+<P>Problem: if down/delete an aliased device (eg eth0:1) you
+also bring down the other eth0 devices. This means that you
+can't bring down an alias remotely as you loose your connection
+(eth0) to that machine. You then have to go the console of the
+remote machine to fix it by rmmod'ing the device driver for the
+device and bring it up again.
+<P>The configure script handles this for you and will exit (with
+instructions on what to do next) if it finds that an aliased
+device needs to be removed by rmmod'ing the module for the NIC.
+<P>(I'm not sure that all of the following is accurate, please
+test yourself first).
+<P>(Stephen D. WIlliams <CODE>sdw@lig.net</CODE>)
+whenever you want to down/delete an alias, first set it's netmask
+to 255.255.255.255. This avoids also automatically downing
+aliases that are on the same netmask and are considered
+'secondaries' by the kernel.
+<P>
+<P>(Joe)
+To bring up an aliased device
+<P>$ifconfig eth0:1 192.168.1.10 netmask 255.255.255.0
+<P>to bring eth0:1 down without taking out eth0, you do
+it in 2 steps, first change the netmask
+<P>$ifconfig eth0:1 192.168.1.10 netmask 255.255.255.255
+<P>then down it
+<P>$ifconfig eth0:1 192.168.1.10 netmask 255.255.255.255 down
+<P>then eth0 device should be unaffected, but the eth0:1
+device will be gone.
+<P>This works on one of my machines but not on another
+(both with 2.2.13 kernels).  I will have to look
+into this. Here's the output from the machine for
+which this procedure doesn't work.
+<P>Examples:
+Starting setup. The real-server's regular IP/24 on eth0,
+the VIP/32 on eth0:1 and another IP/24 for illustration
+on eth0:2. Machine is SMP 2.2.13 net-tools 1.49
+<P>
+<PRE>
+chuck:~# ifconfig -a
+eth0      Link encap:Ethernet  HWaddr 00:90:27:71:46:B1
+          inet addr:192.168.1.2  Bcast:192.168.1.255  Mask:255.255.255.0
+          UP BROADCAST RUNNING ALLMULTI MULTICAST  MTU:1500  Metric:1
+          RX packets:6071219 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:6317319 errors:0 dropped:0 overruns:4 carrier:0
+          collisions:757453 txqueuelen:100
+          Interrupt:18 Base address:0x6000
+
+eth0:1    Link encap:Ethernet  HWaddr 00:90:27:71:46:B1
+          inet addr:192.168.1.110  Bcast:192.168.1.110  Mask:255.255.255.255
+          UP BROADCAST RUNNING ALLMULTI MULTICAST  MTU:1500  Metric:1
+          Interrupt:18 Base address:0x6000
+
+eth0:2    Link encap:Ethernet  HWaddr 00:90:27:71:46:B1
+          inet addr:192.168.1.240  Bcast:192.168.1.255  Mask:255.255.255.0
+          UP BROADCAST RUNNING ALLMULTI MULTICAST  MTU:1500  Metric:1
+          Interrupt:18 Base address:0x6000
+
+lo        Link encap:Local Loopback
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          UP LOOPBACK RUNNING  MTU:3924  Metric:1
+          RX packets:299 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:299 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0
+
+chuck:~# netstat -rn
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags   MSS Window  irtt Iface
+192.168.1.110   0.0.0.0         255.255.255.255 UH        0 0          0 eth0
+192.168.1.0     0.0.0.0         255.255.255.0   U         0 0          0 eth0
+127.0.0.0       0.0.0.0         255.0.0.0       U         0 0          0 lo
+0.0.0.0         192.168.1.1     0.0.0.0         UG        0 0          0 eth0
+
+Deleting eth0:1 with netmask /32
+
+chuck:~# ifconfig eth0:1 192.168.1.110 netmask 255.255.255.255 down
+chuck:~# ifconfig -a
+eth0      Link encap:Ethernet  HWaddr 00:90:27:71:46:B1
+          inet addr:192.168.1.2  Bcast:192.168.1.255  Mask:255.255.255.0
+          UP BROADCAST RUNNING ALLMULTI MULTICAST  MTU:1500  Metric:1
+          RX packets:6071230 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:6317335 errors:0 dropped:0 overruns:4 carrier:0
+          collisions:757453 txqueuelen:100
+          Interrupt:18 Base address:0x6000
+
+eth0:2    Link encap:Ethernet  HWaddr 00:90:27:71:46:B1
+          inet addr:192.168.1.240  Bcast:192.168.1.255  Mask:255.255.255.0
+          UP BROADCAST RUNNING ALLMULTI MULTICAST  MTU:1500  Metric:1
+          Interrupt:18 Base address:0x6000
+
+lo        Link encap:Local Loopback
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          UP LOOPBACK RUNNING  MTU:3924  Metric:1
+          RX packets:299 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:299 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0
+
+
+If you do the same thing with eth0:2 with the /24 netmask
+
+chuck:~# ifconfig eth0:2 192.168.1.240 netmask 255.255.255.0 down
+chuck:~# ifconfig -a
+eth0      Link encap:Ethernet  HWaddr 00:90:27:71:46:B1
+          inet addr:192.168.1.2  Bcast:192.168.1.255  Mask:255.255.255.0
+          UP BROADCAST RUNNING ALLMULTI MULTICAST  MTU:1500  Metric:1
+          RX packets:6071237 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:6317343 errors:0 dropped:0 overruns:4 carrier:0
+          collisions:757453 txqueuelen:100
+          Interrupt:18 Base address:0x6000
+
+lo        Link encap:Local Loopback
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          UP LOOPBACK RUNNING  MTU:3924  Metric:1
+          RX packets:299 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:299 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0
+
+tunl0     Link encap:IPIP Tunnel  HWaddr
+          unspec addr:[NONE SET]  Mask:[NONE SET]
+          NOARP  MTU:1480  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0
+</PRE>
+<P>
+<P>
+<H2><A NAME="ss20.19">20.19 Backing up real-servers/keeping in sync</A>
+</H2>
+
+<P>
+<P>Real-servers should have indentical files for any particular
+service (since the client can connect to any of them). To keep
+servers in sync (after adding content/files) you can use rsync.
+<P>(Wensong)
+If you just have two servers, it might be easy to use rsync to
+synchronize the backup server, and put the rsync job in the
+crontab in the primary. See http://rsync.samba.org/ for rsync.
+<P>If you have a big cluster, you might be interested in Coda, a
+fault-tolerant distributed filesystem. See
+http://www.coda.cs.cmu.edu/ for more information.
+<P>(note from Joe, coda doesn't seem ready for prime time yet, we
+do have hopes for Intermezzo http://www.inter-mezzo.org)
+<P>On Mon, 27 Sep 1999, J Saunders wrote:
+<PRE>
+> I plan to start a frequently updated web site (potentially every minute
+> or so).
+</PRE>
+<P>("Baeseman, Cliff" <CODE>Cliff.Baeseman@greenheck.com</CODE>)
+<P>I use mirror to do this!.  I created a ftp point on the director.
+All nodes run against the director ftp directory and update the
+local webs. It runs very fast and very solid.
+<P>upload to a single point and the web propagates across the nodes.
+<P>
+<H2><A NAME="ss20.20">20.20 Malicious attacks (SYN floods)</A>
+</H2>
+
+<P>
+<P>LVS has been tested with a 100Mbit/sec syn-flooding attack by
+Alan Cox and Wensong.
+<P>Each connection requires 128 bytes. A machine with 128M of free
+memory could hold 1M concurrent connections. An average connection
+lasts 300secs. Connections which just receive the syn packet are
+expired in 30secs (starting ipvs 0.8 ). An attacker would have
+to initiate 3k connections/sec (600Mbps) to maintain the memory
+at the 128M mark and would require several T3 lines to keep up
+the attack.
+<P>
+<H2><A NAME="ss20.21">20.21 Does SMP help on the director?</A>
+</H2>
+
+<P>
+<P>only one CPU can be in the kernel with 2.2. Since LVS is
+all kernel code, there is no benefit to LVS by using SMP with 2.2.x. 
+Kernel 2.[3-4] can use multiple CPUs. While standard (300MHz pentium)
+directors can easily handle 100Mbps networks, they cannot handle
+an LVS at Gbps speeds. Either SMP directors with 2.4.x kernels
+or multiple directors (each with a separate VIP all pointing
+to the same real-servers) are needed.
+<P>Since VS-NAT requires computation on the director (to rewrite the
+packets) not needed for VS-DR and VS-Tun, SMP would 
+help throughput.
+<P>
+<PRE>
+(Julian Anastasov &lt;tt/uli@linux.tu-varna.acad.bg/)
+> > Does somebody have any idea or data ?
+>
+> it depends :-)
+>
+> If you're using VS-NAT then you'll need a machine that can handle the full
+> bandwidth of the expected connections. If this is T1, you won't need much
+> of a machine. If it's 100Mbps you'll need more (I can saturate 100Mbps
+> with a 75MHz machine). If you're running VS-DR or VS-Tun you'll need
+> less horse power. Since most LVS is I/O I would suspect that SMP won't
+> get you much. However if the director is doing other things too,
+> then SMP might be useful
+</PRE>
+<P>Yep, LVS in 2.2 can't use both CPUs. This is not a LVS limitation.
+It is already solved in the latest 2.3 kernels: softnet. If you are using
+the director as real server too, SMP is recommended.
+<P>
+<PRE>
+> Date: Wed, 03 Jan 2001 11:08:41 -0500
+> From: Pat O'Rourke &lt;tt/orourke@mclinux.com/
+> 
+> In our experiments we've been seeing
+> an SMP director perform significantly worse than a uni-processor one
+> (using the same hardware - only difference was booting an SMP kernel
+> or uni-processor).
+> 
+> We've been using a 2.2.17 kernel with the 1.0.2 LVS patch and bumped
+> the send / recv socket buffer memory to 1mb for both the uni-processor
+> and SMP scenarios.  The director is an Intel based system with 550
+> mhz Pentium 3's.
+</PRE>
+<P>Date: Tue, 26 Dec 2000 14:25:04 -0600 (CST)
+From: Michael E Brown <CODE>michael_e_brown@dell.com</CODE>
+<P>
+<PRE>
+> In some tests I've done with FTP, I have seen
+> *significant* improvements using dual and quad processors using 2.4. Under
+> 2.2, there are improvements, but not astonishing ones.
+> 
+> Things like 90% saturation of a Gig link using quad processors, 70% using
+> dual processors and 55% using a single processor under 2.4.0test. Really
+> amazing improvements.
+> 
+> > What are the percentage differences on each processor configuration
+> > between 2.2 and 2.4?  How does a 2.2 system compare to a 2.4 system on the
+> > same hardware?
+> 
+> I haven't had much of a chance to do a full comparison of 2.2 vs 2.4, but
+> most of the evidence on tests that I have run points to a > 100%
+> improvement for *network intensive* tasks.
+</PRE>
+<P>
+<PRE>
+Date: 03 Jan 2001
+> Pat O'Rourke wrote:
+> 
+> In our experiments we've been seeing
+> an SMP director perform significantly worse than a uni-processor one
+> (using the same hardware - only difference was booting an SMP kernel
+> or uni-processor).
+</PRE>
+<P>
+<H2><A NAME="ss20.22">20.22 Multiple IPs on the Director</A>
+</H2>
+
+<P>
+<P>(Michael Sparks)
+<P>It's useful for the director to have 3 IP addresses. One which is the real
+machines base IP address, one which is the virtual service IP address, and
+then another virtual IP address for servicing the director. The reason for
+this is associated with director failover.
+<P>Suppose:
+<UL>
+<LI>X real-servers pinging director on real IP A (assume a heartbeat style
+monitor) serving pages off virtual IP V. (IP A would be in place of
+hostip above)
+</LI>
+<LI>Director on IP A fails, backup director (*) on IP B comes online taking
+over the virtual IP V. By not taking over IP A, IP B can watch for IP
+A to come back online via the network, rather than via a serial link
+(etc).
+</LI>
+<LI> Problem is the real-servers are still sending to IP A for the heartbeat
+code to be valid on IP B, the real-servers need to send their pings to
+IP B instead. IMO the easiest solution is to allocate a we need a
+"heartbeat"/monitor virtual IP. (this is the vhostip)</LI>
+</UL>
+<P>
+<H2><A NAME="ss20.23">20.23 Expanding port number range</A>
+</H2>
+
+<P>
+<P>
+<PRE>
+Wang Haiguang wrote:
+> My client machine it uses port numbers between 1024 - 4096. 
+> After reaching 4096, it will loop back to 1024
+> and reuse the ports. I want to use more port nubmers
+
+&lt;tt/michael_e_brown@dell.com/ 06 Feb 2001 
+
+echo 1024 65000 > /proc/sys/net/ipv4/ip_local_port_range
+/usr/src/linux/Documentation/networking/ip-sysctl.txt
+</PRE>
+<P>
+<P>
+<PRE>
+From: Julian Anastasov &lt;ja@ssi.bg>
+On Tue, 27 Feb 2001, LVS Account wrote:
+
+> I'm trying to do some load testing of LVS using a reverse proxy cache server
+> as the load balanced app.  The error I get is from a load generating app..
+> Here is the error:
+>
+> byte count wrong 166/151
+
+        Broken app.
+
+> this goes on for a few hundred requests then I start getting:
+> Address already in use
+
+        App uses too many local ports.
+
+> This is when I can't telnet to port 80 any more... If I try to telnet to
+> 10.0.0.80 80 I get this:
+>
+> $ telnet 10.0.0.80 80
+> Trying 10.0.0.80...
+> telnet: Unable to connect to remote host: Resource temporarily unavailable
+
+        No more free local ports.
+
+> If I go directly to the web server OR if I go directly to the IP of the
+> reverse proxy cache server, I don't get these errors.
+
+        Hm, there are free local ports now.
+
+> I'm using a load balancing app that I call this way:
+>
+> /home/httpload/load -sequential -proxyaddr 10.0.0.80 -proxyport
+> 0  -parallel 120 -seconds 6000000 /home/httpload/url
+
+Thanks,
+
+upping the local port range has helped tremendously
+</PRE>
+<P>
+<H2><A NAME="ss20.24">20.24 Performance Hints from the Squid people</A>
+</H2>
+
+<P>
+<P>There is information on the Squid site about tuning a squid box for performance.
+This should apply to an LVS director. 
+For a 100Mbps network, current PC hardware on a director can 
+saturate a network without these optimizations.
+However current single processor hardware cannot saturate 1Gpbs network, 
+and optimizations are helpful.
+Thei squid information is as good a place to start as any.
+<P>Here's some more info 
+<PRE>
+> Date: Fri, 29 Dec 2000 15:50:04 -0600 (CST)
+> From: Michael E Brown &lt;tt/michael_e_brown@dell.com/
+> 
+> How much memory do you have? How fast of network links? There are some
+> kernel parameters you can tune in 2.2 that help out, and there are even
+> more in 2.4. From the top of my head,
+> 
+> 1) /proc/sys/net/core/*mem* &lt;-- tune to your memory spec. The defaults are
+> not optimized for network throughput on large memory machines.
+> 
+> 2.) 2.4 only /proc/sys/net/ipv4/*mem*
+> 
+> 3.) For fast links, with multiple adapters (Two gig links, dual CPU) 2.4
+> has NIC-->CPU IRQ binding. That can really help also on heavily loaded
+> links.
+> 
+> 4.) For 2.2 I think I would go into your BIOS or RCU (if you have one) and
+> hardcode all NIC adapters (Assuming identical/multiple NICS) to the same
+> IRQ. You get some gain due to cache affinity, and one interrupt may
+> service IRQs from multiple adapters in one go, on heavily loaded links.
+> 
+> 5.) Think "Interrupt coalescing". Figure out how your adapter driver turns
+> this on and do it. If you are using Intel Gig links, I can send you some
+> info on how to tune it. Acenic Gig adapters are pretty well documented.
+> 
+> For a really good tuning guide, go to spec.org, and look up the latest TUX
+> benchmark results posted by Dell. Each benchmark posting has a full list
+> of kernel parameters that were tuned. This will give you a good starting
+> point from which to examine your configuration.
+> 
+> The other obvious tuning recommendation: Pick a stable 2.4 kernel and use
+> that. Any (untuned) 2.4 kernel will blow away 2.2 in a multiprocessor
+> configuration. If I remember correctly 2.4.0test 10-11 are pretty stable.
+</PRE>
+<P>Some information is on
+<P>http://www.LinuxVirtualServer.org/lmb/LVS-Announce.html
+<P>
+<H2><A NAME="ss20.25">20.25 Problems with large uptimes</A>
+</H2>
+
+<P>
+<P>(linux with an eepro100 can't pass more than 2^31-1 packets)
+<P>From: Jerry Glomph Black <CODE>black@real.com</CODE>
+Subject: 2-billion-packet bug?
+<P>I've seen several 2.2.12/2.2.13 machines lose their network connections after
+a long period of fine operation.   Tonight our main LVS box fell off the net.  I
+visited the box, it had not crashed at all.   However, it was not communicating
+via its (Intel eepro100) ethernet port.
+<P>The evil evidence:
+<PRE>
+eth0      Link encap:Ethernet  HWaddr 00:90:27:50:A8:DE
+          inet addr:172.16.0.20  Bcast:172.16.255.255  Mask:255.255.0.0
+          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+          RX packets:15 errors:288850 dropped:0 overruns:0 frame:0
+          TX packets:2147483647 errors:1 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:100
+          Interrupt:10 Base address:0xd000
+</PRE>
+<P>Check out the TX packets number!  That's 2^31-1.
+Prior to the rollover, In-and-out packets were roughly equal.
+I think this has happened to non-LVS systems as well, on 2.2 kernels.
+ifconfigging eth0 down-and-up did nothing.  A reboot (ugh) was necessary.
+<P>
+<H2><A NAME="ss20.26">20.26 Testimonials</A>
+</H2>
+
+<P>
+<P>This isn't particularly inclusive. We don't pester people for
+testimonials as we don't want to scare people from posting to the
+mailing list and we don't want inflated praise. 
+People seem to understand this and don't 
+pester us with their performance data either. 
+Much of it isn't scientific, but it is nice to hear. 
+The people who don't like LVS presumably go somewhere else,
+and we don't hear any complaints from them.
+<P>
+<P>From: Michael Sparks <CODE>zathras@epsilon3.mcc.ac.uk</CODE>
+<P>On Wed, 2 Feb 2000, [iso-8859-1] "Daniel Erdös" wrote:
+<PRE>
+> How many connections did you really handled? What are your impressions and
+> experiences in "real life"? What are the problems?
+</PRE>
+<P>Problems - LVS provides a load balancing mechanism, nothing more, nothing
+less, and does it *extremely* well. If your back end real servers are
+flakey in anyway, then unless you have monitoring systems in place to take
+those machines out of service as soon as there are problems with those
+servers, then users will experience glitches in service.
+<P>NB, this is essentially a real server stability issue, not an LVS issue -
+you'd need good monitoring in place anyway if you weren't using LVS!
+<P>Another plus in LVS's favour in something like this over the commercial
+boxes, is the fact that the load balancer is a Unix type box - meaning
+your monitoring can be as complex or simple as you like. For example load
+balancing based on wlc could be supplemented by server info sent to the
+director.
+<P>
+<PRE>
+Date: Thu, 23 Mar 2000 16:15:14 -0800 (PST)
+From: Drew Streib &lt;tt/ds@varesearch.com/
+Subject: Re: question about lvs and 2.3.x, 2.4
+</PRE>
+<P>I can vouch for all sorts of good performance from lvs. I've had single
+processor boxes handle thousands of simultaneous connections without
+problems, and yes, the 50,000 connections per second number from the VA
+cluster is true.
+<P>lvs powers SourceForge.net, Linux.com, Themes.org, and VALinux.com.
+SourceForge uses a single lvs server to support 22 machines, multiple
+types of load balancing, and an average 25Mbit/sec traffic. With
+60Mbit/sec of traffic flowing through the director (and more than 1000
+concurrent connections), the box was having no problems whatsoever, and in
+fact was using very little cpu.
+<P>Using DR mode, I've sent request traffic to an director box resulting in
+near gigabit traffic from the real servers. (Request traffic was on the
+order of 40Mbit.)
+<P>I can say without a doubt that lvs toasts F5/BigIP solutions, at least in
+our real world implementations. I wouldn't trade a good lvs box for a
+Cisco Local Director either.
+<P>
+<PRE>
+> The 50,000 figure is unsubstantiated and was _not_ claimed by anyone at VA
+> Linux Systems. A cluster with 16 apache servers and 2 LVS servers in a was
+> configured for Linux World New York but due to interconnect problems the
+> performance was never measured - we weren't happy with the throughput of the
+> NICs so there didn't seem to be a lot of point. This problem has been
+> resolved and there should be an opportunity to test this again soon.
+</PRE>
+<P>In recent tests, I've taken multinode clusters to tens of thousands of
+connections per second. Sorry for any confusion here. The exact 50,000
+number from LWCE NY is unsubstantiated.
+<P>
+<PRE>
+Date: Thu, 23 Mar 2000 16:34:21 -0800 (PST)
+From: Jerry Glomph Black &lt;tt/black@real.com/
+Subject: LVS testimonials
+</PRE>
+<P>We ran a very simple LVS-DR arrangement with one PII-400 (2.2.14 kernel)directing
+about 20,000 HTTP requests/second to a bank of about 20 Web servers answering
+with tiny identical dummy responses for a few minutes.   Worked just fine.
+<P>
+<P>Now, at more terrestrial, but quite high real-world loads, the systems run just
+fine, for months on end.   (using the weighted-least-connection algorithm,
+usually).
+<P>We tried virtually all of the commercial load balancers, LVS beats them
+all for reliability, cost, manageability, you-name-it.
+<P>
+<PRE>
+Jerry Glomph Black
+Director, Internet &amp; Technical Operations
+RealNetworks
+Seattle Washington USA
+</PRE>
+<P>Well I guess 2 testimonials isn't too bad. :-)
+<P>
+<H2><A NAME="ss20.27">20.27 Transport Layer Security(TLS)</A>
+</H2>
+
+<P>
+<P>From: Ted Pavlic <CODE>tpavlic@netwalk.com</CODE>, Nov 2000
+<BLOCKQUOTE>
+I don't see any reason why LVS would have any bearing on TLS. As far as LVS
+was concerned, TLS connections would just be like any other connections.
+<P>
+<P>Perhaps you are referring to HTTPS over TLS? Such a protocol has not been
+completed yet in general, and when it does it still will not need any extra
+work to be done in the LVS code.
+<P>The whole point of TLS is that one connects to the same port as usual and
+then "upgrades" to a higher level of security on that port. All the secure
+logic happens at a level so high that LVS wouldn't even notice a change.
+Things would still work as usual.
+</BLOCKQUOTE>
+<P>Julian Anastasov <CODE>ja@ssi.bg</CODE>
+<BLOCKQUOTE>
+This is an end-to-end protocol layered on another transport
+protocol. I'm not a TLS expert but as I understand TLS 1.0 is
+handled just like the SSL 3.0 and 2.0 are handled, i.e. they
+require only a support for persistent connections. 
+</BLOCKQUOTE>
+<P>
+<H2><A NAME="ss20.28">20.28 rcp and friends on LVS (better to use ssh)</A>
+</H2>
+
+<P>
+<P>David Lambe <CODE>david.lambe@netunlimited.com</CODE> Mon, 13 Nov 2000 
+<P>
+<PRE>
+> I've recently completed "construction" of a LVS cluster consisting of 1 LVS
+> and 3 real servers. Everything seems to work OK with the setup except for rcp.
+.
+> All it ever gives is "Permission Denied" when running rcp blahfile node2:/tmp/blahfile 
+> from a console on  node1.
+> 
+> Both rsh and rlogin function, BUT require the password to be entered twice.
+</PRE>
+<P>Joe
+<P>sounds like you are running RedHat. You have to fix the pam files.
+The beowulf people have been through all of this. 
+You can either recompile the r* executables without pam
+(my solution), or you can fiddle with the pam files. 
+For suggestions go to the beowulf mailing list search
+engine at
+<A HREF="http://www.scyld.com/search.html">scyld beowulf</A><P>and look for "rsh", "root", "rlogin"
+<P>If you go to the beowulf site, you'll find people are moving to replace
+rsh etc with ssh etc on sites which could be attacked from outside
+(and turning off telnet, r* etc)
+<P>My machines aren't connected to the outside world so I have root with
+no passwd. To compile ssh do
+<P>./configure --with-none
+<P>and use the config file I've attached (the docs on passwordless
+root logins were not helpfull)
+<P>
+<PRE>
+# This is ssh server systemwide configuration file.
+
+Port 22
+#Protocol 2,1
+ListenAddress 0.0.0.0
+#ListenAddress ::
+HostKey /usr/local/etc/ssh_host_key
+ServerKeyBits 768
+LoginGraceTime 600
+KeyRegenerationInterval 3600
+PermitRootLogin yes
+#PermitRootLogin without-password
+#
+# Don't read ~/.rhosts and ~/.shosts files
+IgnoreRhosts yes
+# Uncomment if you don't trust ~/.ssh/known_hosts for RhostsRSAAuthentication
+#IgnoreUserKnownHosts yes
+StrictModes yes
+X11Forwarding no
+X11DisplayOffset 10
+PrintMotd yes
+KeepAlive yes
+
+# Logging
+SyslogFacility AUTH
+LogLevel INFO
+#obsoletes QuietMode and FascistLogging
+
+RhostsAuthentication no
+#
+# For this to work you will also need host keys in /usr/local/etc/ssh_known_hosts
+#RhostsRSAAuthentication no
+RhostsRSAAuthentication yes
+#
+RSAAuthentication yes
+
+# To disable tunneled clear text passwords, change to no here!
+PasswordAuthentication yes
+#PermitEmptyPasswords no
+PermitEmptyPasswords yes
+# Uncomment to disable S/key passwords 
+#SkeyAuthentication no
+#KbdInteractiveAuthentication yes
+
+# To change Kerberos options
+#KerberosAuthentication no
+#KerberosOrLocalPasswd yes
+#AFSTokenPassing no
+#KerberosTicketCleanup no
+
+# Kerberos TGT Passing does only work with the AFS kaserver
+#KerberosTgtPassing yes
+
+CheckMail no
+#UseLogin no
+
+# Uncomment if you want to enable sftp
+#Subsystem      sftp    /usr/local/libexec/sftp-server
+#MaxStartups 10:30:60
+</PRE>
+<P>
+<H2><A NAME="ss20.29">20.29 Forwarding an httpd request based on file name not load (mod_proxy)</A>
+</H2>
+
+<P>
+<P>On Mon, 25 Dec 2000, Sean wrote:
+<P>> I need to forward request using the Direct Routing method to a server.
+> However I determine which server to send the request to depending on the
+> file it has requested in the HTTP GET not based on it's load. For this I am
+<P>From: Michael E Brown <CODE>michael_e_brown@dell.com</CODE> Mon, 25 Dec 2000 
+<P>Use LVS to balance the load among several servers set up to reverse-proxy
+your real-servers, set up the proxy servers to load-balance to
+real-servers based upon content.
+<P><CODE>atif.ghaffar@4unet.net</CODE> 
+<P>On the LVS servers you can run apache with mod_proxy comiled in, then
+redirect traffic with it.
+Example
+<P>
+<PRE>
+        ProxyPass /files/downloads/ http://internaldownloadserver/ftp/
+        ProxyPass /images/ http://internalimagesserver/images/
+</PRE>
+<P>See
+<A HREF="http://www.linuxfocus.org/English/March2000/article147.html">more on Proxy pass</A>
+and 
+<A HREF="http://www.stevek.com/projects/mod_tproxy/">transparent proxy module for apache</A>.
+You can use mod_rewrite if your real-servers are reachable from the net.
+<P>
+<H2><A NAME="ss20.30">20.30 URL parsing</A>
+</H2>
+
+<P>
+<P>
+<PRE>
+> Is there any way to do URL parsing for http requests (ie send cgi-bin
+> requests to one server group, static to another group?)
+</PRE>
+<P>John Cronin <CODE>jsc3@havoc.gtf.org</CODE> 13 Dec 2000
+<P>Probably the best way to do this is to do it in the html code itself;
+make all the cgis hrefs to cgi.your-domain.com.  Similarly,
+you can make images hrefs to image.your-domain.com.  You then
+set these up as additional virtual servers, in addition to your www
+virtual server.  That is going to be a lot easier than parsing URLs;
+this is how they have done it at some of the places I have done
+consulting for; some of those places were using Extreme Networks load
+balancers, or Resonate, or something like that, using dozens of Sun
+and Linux servers, in multiple hosting facilities.
+<P>
+<P>
+<H2><A NAME="ss20.31">20.31 can I run my ipchains firewall and LVS on the same box?</A>
+</H2>
+
+<P> 
+<P>"K.W." <CODE>kathiw@erols.com</CODE> 
+<PRE>
+> can I run my ipchains firewall and LVS (piranha in this case) on the
+> same box? It would seem that I cannot, since ipchains can't understand
+> virtual interfaces such as eth0:1, etc.
+</PRE>
+<P>Brian Edmonds <CODE>bedmonds@antarcti.ca</CODE> 21 Feb 2001 
+<P>I've not tried to use ipchains with alias
+interfaces, but I do use aliased IP addresses in my incoming rulesets,
+and it works exactly as I would expect it to.
+<P>Julian
+<P>I'm not sure whether piranha already supports kernel 2.4, I
+have to check it. ipchains does not understand interfaces aliase even
+in Linux 2.2. Any setup that uses such aliases can be implemented
+without using them. I don't know for routing restrictions that
+require using aliases.
+<P>
+<PRE>
+> I have a full ipchains firewall script, which works (includes port
+> forwarding), and a stripped-down ipchains script just for LVS, and they
+> each work fine separately. When I merge them, I can't reach even just
+> the firewall box. As I mentioned, I suspect this is because of the
+> virtual interfaces required by LVS.
+</PRE>
+<P>LVS does not require any (virtual) interfaces. LVS never
+checks the devices nor any aliases. I'm not sure what is the port
+forwarding support in ipchains too. Is that the support provided
+from ipmasqadm: the portfw and mfw modules? If yes, they are not
+implemented (yet). And this support is not related to ipchains
+at all. Some good features are still not ported from Linux 2.2 to
+2.4 including all these autofw useful things. But you can use LVS
+in the places where use ipmasqadm portfw/mfw but not for the autofw
+tricks. LVS can perfectly do the portfw job and even to extend it
+after the NAT support: there are DR and TUN methods too.
+<P>
+<PRE>
+>I have a full ipchains firewall script, which works (includes port
+>forwarding), and a stripped-down ipchains script just for LVS, and they
+>each work fine separately. When I merge them, I can't reach even just
+>the firewall box. As I mentioned, I suspect this is because of the
+>virtual interfaces required by LVS.
+</PRE>
+<P>Lorn Kay <CODE>lorn_kay@hotmail.com</CODE> 
+<P>I ran into a problem like this when adding firewall rules to my LVS ipchains 
+script. The problem I had was due to the order of the rules.
+<P>Remember that once a packet matches a rule in a chain it is kicked out of 
+the chain--it doesn't matter if it is an ACCEPT or REJECT rule(packets may 
+never get to your FWMARK rules, for example, if they do not come before your 
+ACCEPT and REJECT tests).
+<P>I am using virtual interfaces as well (eg, eth1:1) but, as Julian points 
+out, I had no reason to apply ipchains rules to a specific virtual interface 
+(even with an ipchains script that is several hundred lines long!)
+<P>
+<PRE>
+> Remember that once a packet matches a rule in a chain it is kicked out
+> of the chain--it doesn't matter if it is an ACCEPT or REJECT
+> rule(packets may never get to your FWMARK rules, for example, if they
+> do not come before your ACCEPT and REJECT tests).
+</PRE>
+<P>FWMARKing does not have to be a part of an ACCEPT rule.
+<P>If you have a default DENY policy and then say:
+<PRE>
+/sbin/ipchains -A input -d $VIP -j ACCEPT
+/sbin/ipchains -A input -d $VIP 80 -p tcp -m 3
+/sbin/ipchains -A input -d $VIP 443 -p tcp -m 3
+</PRE>
+<P>To maintain persistence between port 80 and 443 for https, for example, the 
+packets will match on the ACCEPT rule, get kicked out of the input chain 
+tests, and never get marked.
+<P>
+<H2><A NAME="ss20.32">20.32 Setting up a hot spare server</A>
+</H2>
+
+<P>
+<P>Mark Miller <CODE>markm@cravetechnology.com</CODE> 09 May 2001
+Subject: Hot Spare config with LVS?
+<P>
+<BLOCKQUOTE>
+We want a
+configuration where two Solaris based web servers will be setup in a primary
+and secondary configuration.  Rather than load balancing between the two we
+really want the secondary to act as a hot spare for the primary.
+<P>Here is a quick diagram to help illustrate this question:
+<P>
+<PRE>
+                  Internet              LD1,LD2 - Linux 2.4 kernel
+                      |                 RS1,RS2 - Solaris
+                   Router
+                      |
+               -------+-------
+               |             |
+             -----         -----
+             |LD1|         |LD2|
+             -----         -----
+               |             |
+               -------+-------
+                      |
+                    Switch
+                      |
+               ---------------
+               |             |
+             -----         -----
+             |RS1|         |RS1|
+             -----         -----
+</PRE>
+</BLOCKQUOTE>
+ 
+<P>Paul Baker <CODE>pbaker@where2getit.com</CODE> 09 May 2001 
+<P>
+<BLOCKQUOTE>
+Just use heartbeat on the two firewall 
+machines and heartbeat on the two solaris machines. 
+</BLOCKQUOTE>
+<P>Horms <CODE>horms@vergenet.net</CODE> 09 May 2001
+<P>
+<BLOCKQUOTE>
+You can either add and remove servers from the virtual service (using
+ipvsadm) or toggle the weights of the servers from zero to non-zero values.
+</BLOCKQUOTE>
+<P>Alexandre Cassen <CODE>alexandre.cassen@canal-plus.com</CODE> 10 May 2001
+<P>
+<BLOCKQUOTE>
+For your 2 LDs you need to run a Hot standby protocol. Hearthbeat can be
+used, you can also use vrrp or hsrp. I am actually working on the IPSEC AH
+implementation for vrrp. That kind of protocol can be usefull because your
+LD backup server can be used even if it is in backup state (you simply
+create 2 LDs VIP and set default gateway of your serveur pool half on LD1
+and half on LD2).
+<P>For your webserver hot-spare needs, you can use the next keepalived
+(http://keepalived.sourceforge.net) in wich there will be "sorry server"
+facility. This mean exactly what you need => You have a RS server pool, if
+all the server of this RS server pool are down then the sorry server is
+placed into the ipvsadm table automaticaly. If you use keepalived keep in
+mind that you will use NAT topology.
+</BLOCKQUOTE>
+<P>
+<P>Joe 11 May 2001
+<BLOCKQUOTE>
+Unless there's something else going on that I don't know about, I expect
+this isn't a great idea. The hot spare is going to degrade (depreciate,
+disk wear out - although not quite as fast, software need upgrading) 
+just as fast idle as doing work.
+<P>You may as well have both working all the time and for the few hours of
+down time a year that you'll need for planned maintenance, you can make
+do with one machine. If you only need the capacity of 1 machine, then
+you can use two smaller machines instead.
+</BLOCKQUOTE>
+<P>
+<HR>
+<A HREF="LVS-HOWTO-21.html">Next</A>
+<A HREF="LVS-HOWTO-19.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc20">Contents</A>
+</BODY>
+</HTML>

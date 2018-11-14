@@ -1,0 +1,16 @@
+#!/bin/sh
+# This script simply checks our own nameservers that it knows about itself
+# really dumb script, however this is all TCP/UDP communications that would
+# be extremely difficult to represent in piranha's textual 'Send' field
+# We use $1 as the argument in the TEST which will be the various IP's
+# of the real servers in the cluster.
+
+
+TEST=`dig -t soa redhat.com @$1 | grep -c ns.corp.redhat.com`
+# TEST=`host ns.corp.redhat.com $1 | grep -c 207.175.42.153`
+
+if [ $TEST != "1" ]; then
+        echo "OK"
+else
+        echo "FAIL"
+fi

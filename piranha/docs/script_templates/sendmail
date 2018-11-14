@@ -1,0 +1,14 @@
+#!/bin/sh
+# We use $1 as the argument in the TEST which will be the various IP's
+# of the real servers in the cluster.
+
+# Check for sendmail service
+TEST=`echo "HELO test.service" | nc $1 25`
+TEST=`echo $TEST | grep -c "pleased to meet you"`
+
+if [ $TEST != "1" ]; then
+        echo "OK"
+else
+        echo "FAIL"
+	# /bin/echo | mail pager@failure.company.com -s "NOTICE: $1 failed to provide email service"
+fi

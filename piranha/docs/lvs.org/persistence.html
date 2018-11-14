@@ -1,0 +1,176 @@
+<html>
+
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+<title>Persistence Handling in LVS</title>
+</head>
+
+<body text="#000000" bgcolor="#ffffff"
+      link="#0062CE" vlink="#6C9EFF" alink="#ff0000">
+
+<h1>Persistence Handling in LVS</h1>
+
+<p>This page contains information about persistence handling in LVS
+for sticky connection applications, such as http cookie, https, ftp,
+and so on.</p>
+
+<h1>Introduction</h1>
+
+<p>In the LVS cluster that we discuss in other documents, we have
+assumed that each network connection is independent of every other
+connection, so that each connection can be assigned to a server
+independently of any past, present or future assignments. However,
+there are times that two connections from the same client must be
+assigned to the same server either for functional or for performance
+reasons.</p>
+
+<p>FTP is an example for a functional requirement for connection
+affinity.  The client establishs two connections to the server, one is
+a control connection (port 21) to exchange command information, the
+other is a data connection (usually port 20) that transfer bulk
+data. For active FTP, the client informs the server the port that it
+listens to, the data connection is initiated by the server from the
+server's port 20 and the client's port. LinuxDirector could examine
+the packet coming from clients for the port that client listens to,
+and create any entry in the hash table for the coming data
+connection. But for passive FTP, the server tells the clients the port
+that it listens to, the client initiates the data connection
+connectint to that port.  For the LVS/TUN and the LVS/DR,
+LinuxDirector is only on the client-to-server half connection, so it
+is imposssible for LinuxDirector to get the port from the packet that
+goes to the client directly.</p>
+
+<p>SSL (Secure Socket Layer) is an example of a protocol that has
+connection affinity between a given client and a particular server.
+When a SSL connection is made, port 443 for secure Web servers and
+port 465 for secure mail server, a key for the connection must be
+chosen and exchanged. The later connections from the same client are
+granted by the server in the life span of the SSL key.</p>
+
+<h1>Persistent Port Solution</h1>
+
+<p>Our current solution to connection affinity is to add persistent
+port feature in LVS. In the persistent port, when a client first
+accesses the service, LinuxDirector will create a connection template
+between the given client and the selected server, then create an entry
+for the connection in the hash table. The template expires in a
+configurable time, and the template won't expire until all its
+connections expire. The connections for any port from the client will
+send to the server before the template expires. The timeout of
+persistent templates can be configured by users, and the default is
+300 seconds.</p>
+
+<p>Here is some information about the implementation of persistent
+port feature. For persistent ftp service, the template is created in
+the form like &lt;cip, 0, vip, 0, rip, 0&gt;, where cip is client IP
+address, vip is virtual IP address and rip is real server IP
+address. Then, ftp data connection for any port can be caught. For
+other persistent services, the template is created in the form like
+&lt;cip, 0, vip, vport, rip, rport&gt;, which grants that any
+connection from the same client for the persistent service will be
+sent to the same server, but different persistent services is
+irrelavant.</p>
+
+<p>Although the persistent port may lead to slight load imbalance
+among servers, it is a good solution to connection affinity.</p>
+
+<h1>Persistent Granularity</h1>
+
+<p>In the persistent port feature by default, we have assumed that
+persistent granularity is per client. However, here is some
+application scenerios that we need persistent granularity is larger
+than per client. For example, we want to build a persistent service
+based on the LVS cluster, but some ISPs use the non-persistent proxy
+servers, which means that connections from the same clients will be
+sent to the different proxy servers. In the default, LinuxDirector
+will treat them from the different client and sent them to different
+servers, then the clients behind the non-persistent proxy servers
+cannot access our persistent service.</p>
+
+<p>Here we use some conjesture to solve this problem. We assume that
+non-persistent proxy servers are often located in the same network,
+for example the network netmask is 255.255.255.0. We add the
+persistent netmask into persistent services. The client source address
+is masked with this netmask for the purpose of creating and accessing
+the templates, then all clients within the peristent netmask will
+access the same server. The default persistent mask is
+255.255.255.255, which means that the persistent granularity is per
+client.
+</p>
+
+<h1>Examples</h1>
+
+<p>The following is some configuration example related to
+persistence.</p>
+
+<h2>1. Sticky http example of LVS/NAT</h2>
+
+<blockquote>
+    <p>ipvsadm -A -t virtualdomain:www -p<br>
+    ipvsadm -a -t virtualdomain:www -R 192.168.1.2 -m<br>
+    ipvsadm -a -t virtualdomain:www -R 192.168.1.3 -m<br>
+    ipvsadm -a -t virtualdomain:www -R 192.168.1.4 -m</p>
+</blockquote>
+
+<h2>2. FTP example of LVS/NAT</h2>
+
+<blockquote>
+    <p>ipvsadm -A -t virtualdomain:ftp -p 540<br>
+    ipvsadm -a -t virtualdomain:ftp -R 192.168.1.2 -m<br>
+    ipvsadm -a -t virtualdomain:ftp -R 192.168.1.3 -m<br>
+    ipvsadm -a -t virtualdomain:ftp -R 192.168.1.4 -m</p>
+</blockquote>
+
+<h2>3. Sticky http example of LVS/TUN</h2>
+
+<blockquote>
+    <p>ipvsadm -A -t virtualdomain:www -p<br>
+    ipvsadm -a -t virtualdomain:www -R 192.168.1.2 -i<br>
+    ipvsadm -a -t virtualdomain:www -R 192.168.1.3 -i<br>
+    ipvsadm -a -t virtualdomain:www -R 192.168.1.4 -i</p>
+</blockquote>
+
+<h2>4. FTP example of LVS/DR</h2>
+
+<blockquote>
+    <p>ipvsadm -A -t virtualdomain:ftp -p 540<br>
+    ipvsadm -a -t virtualdomain:ftp -R 192.168.1.2 -g<br>
+    ipvsadm -a -t virtualdomain:ftp -R 192.168.1.3 -g<br>
+    ipvsadm -a -t virtualdomain:ftp -R 192.168.1.4 -g</p>
+</blockquote>
+
+<h2>5. Catch-all persistence example of LVS/DR</h2>
+
+<p>In some applications, all servers run the same two or more
+services, it requires that once a clients access one server of a
+server, all connections for other services from the same client must
+be sent to the same server in the specified time. We can use the port
+zero here to catch all persistent services, the configuration commands
+are as follows:</p>
+
+<blockquote>
+    <p>ipvsadm -A -t virtualdomain:0 -p<br>
+    ipvsadm -a -t virtualdomain:0 -R 192.168.1.2 -g<br>
+    ipvsadm -a -t virtualdomain:0 -R 192.168.1.3 -g<br>
+    ipvsadm -a -t virtualdomain:0 -R 192.168.1.4 -g</p>
+</blockquote>
+
+<h2>6. Persistent granularity example</h2>
+
+<blockquote>
+    <p>ipvsadm -A -t virtualdomain:www -p -M 255.255.255.0<br>
+    ipvsadm -a -t virtualdomain:www -R 192.168.1.2<br>
+    ipvsadm -a -t virtualdomain:www -R 192.168.1.3<br>
+    ipvsadm -a -t virtualdomain:www -R 192.168.1.4</p>
+</blockquote>
+
+<hr>
+
+<p align="center">
+<font size="-1">
+$Id: persistence.html,v 1.2 2001/06/07 20:09:39 copeland Exp $
+<br>Created on: 1999/12/26
+</font>
+
+</body>
+</html>

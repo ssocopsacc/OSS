@@ -1,0 +1,903 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO: Failover protection</TITLE>
+ <LINK HREF="LVS-HOWTO-20.html" REL=next>
+ <LINK HREF="LVS-HOWTO-18.html" REL=previous>
+ <LINK HREF="LVS-HOWTO.html#toc19" REL=contents>
+</HEAD>
+<BODY>
+<A HREF="LVS-HOWTO-20.html">Next</A>
+<A HREF="LVS-HOWTO-18.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc19">Contents</A>
+<HR>
+<H2><A NAME="failover"></A> <A NAME="s19">19. Failover protection</A></H2>
+
+<P>
+<P>Don't even think about doing this till you've got your LVS working
+properly. If you want the LVS to survive a server or director failure, you
+can add software to do this after you have the LVS working.
+For production systems, failover may be useful or required.
+<P>On director or real-server failure, the connection/session from 
+the client to the real-server is lost. Preserving session information
+is a difficult problem. Do not expect a solution real soon.
+After failover, the client will be presented with a new connection.
+Unlike on a single server, only some of the clients will experience
+loss of connection.
+<P>The most common problem here is loss of
+network access or extreme slowdown. Hardware failure or an OS crash
+(on unix) is less likely. 
+However redundancy of services on the real-servers is one of the useful features
+of LVS. One machine/service can be removed from the functioning virtual server
+for upgrade or moving of the machine and can be brought back on line later
+without interruption of service to the client.
+<P>
+<H2><A NAME="ss19.1">19.1 Director failure</A>
+</H2>
+
+<P>
+<P>What happens
+if the director dies? The usual solution is make a duplicate
+director(s) and to run heartbeat between them. One director
+defaults to being the operational director and the other takes
+over when heartbeat detects that the default director has died.
+<P>
+<P>
+<PRE>
+                        ________
+                       |        |
+                       | client |
+                       |________|
+                           |
+                           |
+                        (router)
+                           |
+                           |
+          ___________      |       ___________
+         |           |     |  DIP |           |
+         | director1 |-----|------| director2 |
+         |___________|     |  VIP |___________|
+               |     &lt;- heartbeat->    |
+               |---------- | ----------|
+                           |
+         ------------------------------------
+         |                 |                |
+         |                 |                |
+     RIP1, VIP         RIP2, VIP        RIP3, VIP
+   ______________    ______________    ______________
+  |              |  |              |  |              |
+  | real-server1 |  | real-server2 |  | real-server3 |
+  |______________|  |______________|  |______________|
+</PRE>
+<P>The 
+<A HREF="http://ultramonkey.sourceforge.net">Ultra Monkey project</A>
+uses Heartbeat from the Linux-HA project and ldirectord to monitor the real-servers.
+Fake, heartbeat and mon are available at the 
+<A HREF="http://linux-ha.org/download">Linux High Availability site</A>.
+<P>The setup of Ultra Monkey is also covered on the LVS website.
+<P>
+<H3>Two box HA LVS</H3>
+
+<P>
+<P>Doug Sisk <CODE>sisk@coolpagehosting.com</CODE> 19 Apr 2001
+<P>
+<BLOCKQUOTE>
+Is it possible to create a two server LVS with fault tolerance?
+<P>
+<P>It looks straight forward with 4 servers ( 2 Real and 2 Directors),
+but can it be done with just two boxes, ie directors, each director being
+a real-server for the other director and a real-server running localnode
+for itself?
+</BLOCKQUOTE>
+ 
+<P>Horms
+<P>Take a look at ultramonkey.org, that should give you all the bits you need
+to make it happen. You will need to configure heartbeat on each box, and
+then LVS (ldirectord) on each box to have two real servers: the other box,
+and localhost.
+<P>
+<H2><A NAME="ss19.2">19.2 Real-server failure</A>
+</H2>
+
+<P>
+<P>An agent external to the ipvs code on the director is used to monitor the services. 
+LVS itself can't monitor the services as LVS is just a packet switcher.
+If a real-server fails, the director doesn't get the failure, the client does.
+For the standard VS-Tun and VS-DR setups (ie receiving packets by an ethernet
+device and not by TP), the reply
+packets from the real-server go to its default gw and don't go through the director, 
+so the LVS can't detect failure even if it wants to. 
+For some of the mailings concerning why
+the LVS does not monitor itself and why an external agent (eg mon) is used
+instead, see the postings on 
+<A HREF="#agent">external agents</A>.
+<P>In a failure protected LVS, if the real-server at the end of a connection fails,
+the client will loose their connection to the LVS, 
+and the client will have to start with a new connection, as would happen
+on a regular single server. 
+With a failure protected LVS, the failed real-server will be switched
+out of the LVS and a working new server will be made available to you transparently
+(the client will connect to one of the still working servers, or possibly a new server
+if one is brought on-line).
+<P>Here the functioning and setup of "mon" is described. 
+In the Ultra Monkey version of LVS, ldirectord fills the same role.
+(I haven't compared ldirectord and mon. I used mon because it was available
+at the time, while ldirectord was either not available or I didn't know about it.)
+The configure script will setup mon to monitor the services on the real-servers.
+<P>Get "mon" and "fping" from
+http://www.kernel.org/software/mon/ (I'm using mon-0.38.20)
+<P>(from ian.martins@mail.tju.edu - comment out
+line 222 in fping.c if compiling under glibc)
+<P>
+<P>Get the perl package "Period" from
+CPAN, ftp://ftp.cpan.org)
+<P>To use the fping and telnet monitors, you'll need the tcp_scan
+binary which can be built from satan. The standard version of
+satan needs patches to compile on Linux. The patched version is
+at
+<P>ftp://sunsite.unc.edu/pub/Linux/system/network/admin
+<P>
+<H2><A NAME="ss19.3">19.3 Service/real-server failout</A>
+</H2>
+
+<P>
+<P>To activate real-server failover, you can install mon on the director.
+Several people have indicated that they have written/are using other schemes.
+RedHat's piranha
+has monitoring code, and handles director failover and is documented there.
+<P>ldirectord handles director failover and is part of the Linux High
+Availability project. ldirectord needs Net::SSLeay only if you are
+monitoring https (Emmanuel Pare <CODE>emman@voxtel.com</CODE>, Ian S. McLeod
+<CODE>ian@varesearch.com</CODE>)
+<P>To get ldirectord -
+<P>From: <CODE>jacob.rief@tis.at</CODE>
+<P>
+<PRE>
+the newest version available from 
+cvs.linux-ha.org:/home/cvs/
+user guest, 
+passwd guest
+module-name is: ha-linux
+file: ha-linux/heartbeat/resource.d/ldirectord
+documentation: ha-linux/doc/ldirectord
+</PRE>
+<P>Here's a possible alternative to mon -
+<P>From: Doug Bagley <CODE>doug@deja.com</CODE>  17 Feb 2000
+<P>Looking at mon and ldirectord, I wonder what kind of work is planned
+for future service level monitoring?
+<P>mon is okay for general purposes, but it forks/execs each monitor
+process, if you have 100 real services and want to check every 10
+seconds, you would fork 10 monitor processes per second.  This is
+not entirely untenable, but why not make an effort to make the
+monitoring process as lightweight as possible (since it is running
+on the director, which is such an important host)?
+<P>ldirectord, uses the perl LWP library, which is better than forking,
+but it is still slow.  It also issues requests serially (because LWP
+doesn't really make parallel requests easy).
+<P>I wrote a very simple http monitor last night in perl that uses
+non-blocking I/O, and processes all requests in parallel using
+select().  It also doesn't require any CPAN libraries, so installation
+should be trivial.  Once it is prototyped in perl, conversion to C
+should be straightforward.  In fact, it is pretty similar to the
+Apache benchmark program (ab).
+<P>In order for the monitor (like ldirectord) to do management of the
+ipvs kernel information, it would be easier if the /proc interface to
+ipvs gave a more machine readable format.
+<P>From: Michael Sparks <CODE>zathras@epsilon3.mcc.ac.uk</CODE>
+<P>Agreed :-)
+<P>
+<PRE>
+It strikes me that rather than having:
+type serviceIP:port mechanism
+  -> realip:port tunnel weight active inactive
+  -> realip:port tunnel weight active inactive
+  -> realip:port tunnel weight active inactive
+  -> realip:port tunnel weight active inactive
+</PRE>
+<P>If the table was more like:
+<PRE>
+type serviceIP:port mechanism realip:port tunnel weight active inactive
+</PRE>
+<P>Then this would make shell/awk/perl/etc scripts that do things with this
+table easier to cobble together.
+<P>
+<PRE>
+> That seems like a far reaching precedent to me.  On the other hand, if
+> the ipvsadm command wished to have a option to represent that
+> information in XML, I can see how that could be useful.
+</PRE>
+<P>This reminds me I should really finish tweaking the prog I wrote to allow
+pretty printing of the ipvsadm table, and put it somewhere else for others
+to play with if they like - it allows you to specify a template file for
+formatting the output of of ipvsadm, making displaying the stuff as XML,
+HTML, plain text, etc simpler/quicker. (It's got a few hardcoded settings
+at the mo which I want to ditch first :-)
+<P>
+<H2><A NAME="ss19.4">19.4 Mon for server/service failout</A>
+</H2>
+
+<P>
+<P>Here's the prototype LVS
+<P>
+<PRE>
+
+
+                        ________
+                       |        |
+                       | client |
+                       |________|
+                           |
+                           |
+                        (router)
+                           |
+                           |
+                           |       __________
+                           |  DIP |          |
+                           |------| director |
+                           |  VIP |__________|
+                           |
+                           |
+                           |
+         ------------------------------------
+         |                 |                |
+         |                 |                |
+     RIP1, VIP         RIP2, VIP        RIP3, VIP
+   ______________    ______________    ______________
+  |              |  |              |  |              |
+  | real-server1 |  | real-server2 |  | real-server3 |
+  |______________|  |______________|  |______________|
+</PRE>
+<P>Mon has two parts:
+<P>
+<UL>
+<LI>monitors: these are programs (usually perl scripts) which are run
+periodically to detect the state of a service. E.g. the telnet monitor
+attempts to login to the machine of interest and checks whether a
+program looking like telnetd responds (in this case looking for the
+string "login:"). The program returns success/fail. Monitors have
+been written for many services and new monitors are easy to write.</LI>
+<LI>Mon demon: reads a config file, specifying the hosts/services 
+to monitor and how often to poll them (with the monitors). 
+The conf file lists the actions for failure/success of each host/service.
+When a failure (or recovery) of a service is detected by a
+monitor, an "alert" (another perl script) is run. There are
+alerts which send email, page you or write to a log. LVS
+supplies a "virtualserver.alert" which executes ipvsadm
+commands to remove or add servers/services, in response to
+host/services changing state (up/down).</LI>
+</UL>
+<P>
+<H2><A NAME="ss19.5">19.5 BIG CAVEAT</A>
+</H2>
+
+<P>
+<P>*Trap for the unwary*
+<P>Mon runs on the director, but...
+<P>Remember that you cannot connect to any of the LVS controlled
+services from within the LVS (including from the director)
+(see 
+<A HREF="LVS-HOWTO-4.html#gotcha">gotchas</A>). You can only
+connect to the LVS'ed services from the outside (eg from the client). 
+If you are on the director, the packets will not
+return to you and the connection will hang. If you are connecting from
+the outside (ie from a client) you cannot tell which server you have connected to. 
+This means that mon (or any agent), running on the director 
+(which is where is needs to be to execute ipvsadm commands), 
+cannot tell whether an LVS controlled service is up or down.
+<P>With VS-NAT an agent on the director can access services on the
+RIP of the real-servers (on the director you can connect to 
+the http on the RIP of each real-server).
+Normal (i.e. non LVS'ed) IP communication is unaffected on the private
+director/real-server network of VS-NAT. If ports are not re-mapped
+then a monitor running on the director can watch the httpd on
+server-1 (at 10.1.1.2:80). If the ports are
+re-mapped (eg the httpd server is listening on 8080), then you
+will have to either modify the http.monitor (making an
+http_8080.monitor) or activate a duplicate http service on port
+80 of the server.
+<P>For VS-DR and VS-Tun the service on the real-server is listening
+to the VIP and you cannot connect to this from the director.
+The solution to monitoring services under control of the LVS 
+for VS-DR and VS-Tun is
+to monitor proxy services whose accessability should closely
+track that of the LVS service. Thus to monitor an LVS http
+service on a particular server, the same webpage should also be
+made available on another IP (or to 0.0.0.0), not controlled by
+LVS on the same machine.
+<P>Example:
+<P>
+<PRE>
+VS-Tun, VS-DR
+lvs IP (VIP): eth0 192.168.1.110
+director:     eth0 192.168.1.1/24 (normal login IP)
+              eth1 192.168.1.110/32 (VIP)
+real-server:  eth0 192.168.1.2/24 (normal login IP)
+              tunl0 (or lo:0) 192.168.1.110/32 (VIP)
+</PRE>
+<P>On the real-server, the LVS service will be on the tunl (or lo:0)
+interface of 192.168.1.110:80 and not on 192.168.1.2:80. The IP
+192.168.1.110 on the real-server 192.168.1.2 is a non-arp'ing
+device and cannot be accessed by mon. Mon running on the director
+at 192.168.1.1 can only detect services on 192.168.1.2 (this is
+the reason that the director cannot be a client as well). The
+best that can be done is to start a duplicate service on
+192.168.1.2:80 and hope that its functionality goes up and down
+with the service on 192.168.1.110:80 (a reasonable hope).
+<P>
+<PRE>
+VS-NAT
+lvs IP (VIP): eth0 192.168.1.110
+director:     eth0 192.168.1.1/24 (outside IP)
+              eth0:1 192.168.1.110/32 (VIP)
+              eth1 10.1.1.1/24 (inside IP, default gw for real-servers)
+real-server:  eth0 10.1.1.2/24
+</PRE>
+<P>Some services listen to 0.0.0.0:port, ie will listen on all IPs
+on the and you will not have to start a duplicate service.
+<P>
+<H2><A NAME="ss19.6">19.6 About Mon</A>
+</H2>
+
+<P>
+<P>Mon doesn't know anything about the LVS, it just detects the up/down
+state of services on remote machines and will execute the commands
+you tell it when the service changes state. We give Mon a script which
+runs ipvsadm commands to remove services from the ipvsadm table when
+a service goes down and another set of ipvsadm commands when the service
+comes back up.
+<P>Good things about Mon:
+<P>
+<UL>
+<LI>It's independant of LVS, ie you can setup and debug the LVS without
+Mon running.</LI>
+<LI>You can also test mon independantly of LVS.</LI>
+<LI>The monitors and the demon are independant.</LI>
+<LI>Most code is in perl (one of he "run anywhere" languages) and
+code fixes are easy.</LI>
+</UL>
+<P>Bad things about Mon:
+<P>
+<UL>
+<LI>I upgraded to 0.38.20 but it does't run properly. 
+I downgraded back to v0.37l. (Mar 2001 - Well I was running 0.37l. 
+I upgraded to perl5.6 and some of the monitors/alerts don't work anymore. 
+Mon-0.38.21 seems to work, with minor changes in the output and mon.cf file.)</LI>
+<LI>the author doesn't reply to e-mail.</LI>
+</UL>
+<P>mon-0.37l, keeps executing alerts every polling period following an up-down transition.
+Since you want your service polled reasonable often (eg 15secs), this means you'll
+be getting a pager notice/email every 15secs once a service goes down. 
+Tony Bassette <CODE>kult@april.org</CODE> let me know that mon-0.38 has a numalert command
+limiting the number of notices you'll get.
+<P>
+<H2><A NAME="ss19.7">19.7 Mon Install</A>
+</H2>
+
+<P>
+<P>Mon is installed on the director.
+<P>Most of mon is a set of perl scripts. There are few files to be
+compiled - it is mostly ready to go (rpc.monitor needs to be
+compiled, but you don't need it for LVS).
+<P>You do the install by hand.
+<P>
+<PRE>
+$ cd /usr/lib
+$ tar -zxvof /your_dirpath/mon-x.xx.tar.gz
+</PRE>
+<P>this will create the directory /usr/lib/mon-x.xx/ with mon and
+its files already installed.
+<P>LVS comes with virtualserver.alert (goes in alert.d) and
+ssh.monitor (goes in mon.d).
+<P>Make the directory "mon-x.xx" accessable as "mon" by linking it
+to "mon" or by renaming it
+<P>
+<PRE>
+$ln -s mon-x.xx mon
+or
+$mv mon-x.xx mon
+</PRE>
+<P>Copy the man files (mon.1 etc) into /usr/local/man/man1
+<P>Check that you have the perl packages required for mon to run
+<P>$perl -w mon
+<P>do the same for all the perl alerts and monitors that you'll be
+using (telnet.monitor, dns.monitor, http_t.monitor, ssh.monitor).
+<P>DNS in /etc/services is known as "domain" and "nameserver" but
+not "dns". To allow the use of the string "dns" in the
+lvs_xxx.conf files and to enable configure_lvs.pl to autoinclude
+the dns.monitor, add the string "dns" to the port 53 services in
+/etc/services with an entry like
+<P>
+<P>
+<PRE>
+    domain              53/tcp          nameserver dns  # name-domain server
+    domain              53/udp          nameserver dns
+</PRE>
+<P>Mon expects executables to be in /bin, /usr/bin or /usr/sbin.
+The location of perl in the alerts is #!/usr/bin/perl (and not
+/usr/local/bin/perl) - make sure this is compatible with your
+setup. (Make sure you don't have one version of perl in /usr/bin
+and another in /usr/local/bin).
+<P>The configure script will generate the required mon.cf file for
+you (and if you like copy it to the cannonical location of /etc/mon).
+<P>Add an auth.cf file to /etc/mon
+<P>I use
+<P>
+<PRE>
+#auth.cf ----------------------------------
+# authentication file
+#
+# entries look like this:
+# command: {user|all}[,user...]
+#
+# THE DEFAULT IS TO DENY ACCESS TO ALL IF THIS FILE
+# DOES NOT EXIST, OR IF A COMMAND IS NOT DEFINED HERE
+#
+
+list:           all
+reset:          root
+loadstate:      root
+savestate:      root
+term:           root
+stop:           root
+start:          root
+set:            root
+get:            root
+dump:           root
+disable:        root
+enable:         root
+
+#end auth.cf ----------------------------
+</PRE>
+<P>
+<H2><A NAME="ss19.8">19.8 Mon Configure</A>
+</H2>
+
+<P>
+<P>This involves editing /etc/mon/mon.cf, which contains information
+about
+<P>
+<UL>
+<LI>nodes monitored</LI>
+<LI>how to detect if a node:service is up (does the node ping,
+does it serve http...?)</LI>
+<LI>what to do when the node goes down and what to do later when
+it comes back up.</LI>
+</UL>
+<P>The mon.cf generated by configure_lvs.pl
+<P>
+<UL>
+<LI> assigns each node to its own group (nodes are brought down one
+at a time rather than in groups - I did this because it was
+easier to code rather than for any good technical reason).
+</LI>
+<LI>detects whether a node is serving some service (eg
+telnet/http) selecting, if possible, a monitor for that
+service, otherwise defaulting to fping.monitor which detects
+whether the node is pingable.
+</LI>
+<LI>on failure of a real-server, mon sends mail to root (using
+mail.alert) and removes the real-server from the ipvsadm table
+(using virtualserver.alert).
+</LI>
+<LI>on recovery sends mail to root (using mail.alert) and adds
+the real-server back to the pool of working real-servers in the
+ipvsadm table (using virtualserver.alert).</LI>
+</UL>
+<P>
+<H2><A NAME="ss19.9">19.9 Testing mon without LVS</A>
+</H2>
+
+<P>
+<P>The instructions here show how to get mon working in two steps.
+First show that mon works independantly of LVS, then second bring
+in LVS.
+<P>The example here assumes a working VS-DR with one real-server and
+the following IPs. VS-DR is chosen for the example here as you can
+set up VS-DR with all machines on the same network. This allows
+you to test the state of all machines from the client (ie using
+one kbd/monitor). (Presumably you could do it from the director
+too, but I didn't try it.)
+<P>
+<PRE>
+lvs IP (VIP): eth0 192.168.1.110
+director:     eth0 192.168.1.1/24 (admin IP)
+              eth0:1 192.168.1.110/32 (VIP)
+real-server:  eth0 192.168.1.8/24
+</PRE>
+<P>On the director, test ping.monitor (in /usr/lib/mon/mon.d) with
+<P>
+<PRE>
+$ ./fping.monitor 192.168.1.8
+</PRE>
+<P>You should get the command prompt back quickly with no other
+output. As a control test for a machine that you know is not on
+the net
+<P>
+<PRE>
+$ ./fping.monitor 192.168.1.250
+192.168.1.250
+</PRE>
+<P>ping.monitor will wait for a timeout (about 5secs) and then
+return the IP of the unpingable machine on exit.
+<P>Check test.alert (in /usr/lib/mon/alert.d) - it writes a file in /tmp
+<P>$ ./test.alert foo
+<P>you will get the date and "foo" in
+/tmp/test.alert.log
+<P>As part of generating the rc.lvs_dr script, you will also have
+produced the file mon_lvsdr.cf. To test mon, place this in 
+/etc/mon/mon.cf
+<P>
+<PRE>
+#------------------------------------------------------
+#mon.cf 
+#
+#mon config info, you probably don't need to change this very much
+#
+
+alertdir   = /usr/lib/mon/alert.d 
+mondir     = /usr/lib/mon/mon.d 
+#maxprocs    = 20
+histlength = 100
+#delay before starting
+#randstart = 60s
+
+#------
+hostgroup LVS1 192.168.1.8 
+
+watch LVS1 
+#the string/text following service (to OEL) is put in header of mail messages
+#service "http on LVS1 192.168.1.8" 
+service fping 
+        interval 15s 
+        #monitor http.monitor 
+        #monitor telnet.monitor 
+        monitor fping.monitor 
+        allow_empty_group 
+        period wd {Sun-Sat} 
+        #alertevery 1h 
+                #alert mail.alert root 
+                #upalert mail.alert root 
+                alert test.alert  
+                upalert test.alert  
+                #-V is virtual service, -R is remote service, -P is protocol, -A is add/delete (t|u)
+                #alert virtualserver.alert -A -d -P -t -V 192.168.1.9:21 -R 192.168.1.8 
+                #upalert virtualserver.alert -A -a -P -t -V 192.168.1.9:21 -R 192.168.1.8 -T -m -w 1
+
+#the line above must be blank
+
+#mon.cf---------------------------
+</PRE>
+<P>Now we will test mon on the real-server 192.168.1.8 independantly
+of LVS. Edit /etc/mon/mon.cf and make sure that all the
+monitors/alerts except for fping.monitor and test.alert are
+commented out (there is an alert/upalert pair for each alert,
+leave both uncommented for test.alert).
+<P>Start mon with rc.mon (or S99mon)
+<P>Here is my rc.mon (copied from the mon package)
+<P>
+<PRE>
+# rc.mon -------------------------------
+# You probably want to set the path to include
+# nothing but local filesystems.
+#
+
+echo -n "rc.mon "
+
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+export PATH
+
+M=/usr/lib/mon
+PID=/var/run/mon.pid
+
+if [ -x $M/mon ]
+        then
+        $M/mon -d -c /etc/mon/mon.cf -a $M/alert.d -s $M/mon.d -f 2>/dev/null
+        #$M/mon -c /etc/mon/mon.cf -a $M/alert.d -s $M/mon.d -f
+fi
+#-end-rc.mon----------------------------
+</PRE>
+<P>After starting mon, check that mon is in the ps table (ps -auxw |
+grep perl).  When mon comes up it will read mon.cf and then check
+192.168.1.8 with the fping.monitor. On finding that 192.168.1.8
+is pingable, mon will run test.alert and will enter a string like
+<P>Sun Jun 13 15:08:30 GMT 1999 -s fping -g LVS3 -h 192.168.1.8 -t 929286507 -u -l 0
+<P>into /tmp/test.alert.log. This is the date, the service (fping),
+the hostgroup (LVS), the host monitored (192.168.1.8), unix time
+in secs, up (-u) and some other stuff I didn't need to figure out
+to get everything to work.
+<P>Check for the "-u" in this line, indicating that 192.168.1.8 is up.
+<P>If you don't see this file within 15-30secs of starting mon, then
+look in /var/adm/messages and syslog for hints as to what failed
+(both contain extensive logging of what's happening with mon).
+(Note: syslog appears to be buffered, it may take a few more
+secs for output to appear here).
+<P>If neccessary kill and restart mon
+<P>
+<PRE>
+$ kill -HUP `cat /var/run/mon.pid`
+</PRE>
+<P>Then pull the network cable on machine 192.168.1.8.  In 15secs or
+so you should hear the whirring of disks and the following entry
+will appear in /tmp/test.alert.log
+<P>Sun Jun 13 15:11:47 GMT 1999 -s fping -g LVS3 -h 192.168.1.8 -t 929286703 -l 0
+<P>Note there is no "-u" near the end of the entry indicating that
+the node is down.
+<P>Watch for a few more entries to appear in the logfile, then
+connect the network cable again. A line with -u should appear in
+the log and no further entries should appear in the log.
+<P>If you've got this far, mon is working.
+<P>Kill mon and make sure root can send himself mail on the
+director. Make sure sendmail can be found in /usr/lib/sendmail
+(put in a link if neccessary).
+<P>Next activate mail.alert and telnet.monitor in /etc/mon/mon.cf
+and comment out test.alert. (Do not restart mon yet)
+<P>Test mail.alert by doing
+<P>
+<PRE>
+$ ./mail.alert root
+hello
+^D
+</PRE>
+<P>root is the address for the mail, hello is some arbitrary STDIN
+and controlD exits the mail.alert. Root should get some mail with
+the string "ALERT" in the subject (indicating that a machine is
+down).
+<P>Repeat, this time you are sending mail saying the machine is up
+(the "-u")
+<P>
+<PRE>
+$ ./mail.alert -u root
+hello
+^D
+</PRE>
+<P>Check that root gets mail with the string "UPALERT" in the
+subject (indicating that a machine has come up).
+<P>Check the telnet.monitor on a machine on the net. You will need
+tcp_scan in a place that perl sees it. I moved it to /usr/bin.
+Putting it in /usr/local/bin (in my path) did not work.
+<P>
+<PRE>
+$ ./telnet.monitor 192.168.1.8
+</PRE>
+<P>the program should exit with no output.  Test again on a machine
+not on the net
+<P>
+<PRE>
+$ ./telnet.monitor 192.168.1.250
+192.168.1.250
+</PRE>
+<P>the program should exit outputting the IP of the machine not on
+the net.
+<P>Start up mon again (eg with rc.mon or S99mon), watch for one
+round of mail sending notification that telnet is up (an
+"UPALERT) (note: for mon-0.38.21 there is no initial UPALERT). 
+There should be no further mail while the machine
+remains telnet-able.  Then pull the network cable and watch for
+the first ALERT mail. Mail should continue arriving every mon
+time interval (set to 15secs in mon_lvs_test.cf). Then plug the
+network cable back in and watch for one UPALERT mail.
+<P>If you don't get mail, check that you re-edited mon.cf properly
+and that you did kill and restart mon (or you will still be
+getting test.alerts in /tmp). Sometimes it takes a few seconds
+for mail to arrive. If this happens you'll get an avalanche when
+it does start.
+<P>If you've got here you are really in good shape.
+<P>Kill mon (kill `cat /var/run/mon.pid`)
+<P>
+<H2><A NAME="ss19.10">19.10 Can virtualserver.alert send commands to LVS?</A>
+</H2>
+
+<P>
+<P>(virtualserver.alert is a modified version of Wensong's orginal
+file, for use with 2.2 kernels. I haven't tested it back with a
+2.0 kernel. If it doesn't work and the original file does, let me
+know)
+<P>run virtualserver.alert (in /usr/lib/mon/alert.d) from the
+command line and check that it detects your kernel correctly.
+<P>$ ./virtualserver.alert
+<P>you will get complaints about bad ports (which you can ignore,
+since you didn't give the correct arguments). If you have kernel
+2.0.x or 2.2.x you will get no other output.  If you get unknown
+kernel errors, send me the output of `uname -r`. Debugging print
+statements can be uncommented if you need to look for clues here.
+<P>Make sure you have a working VS-DR LVS serving telnet on a
+real-server. If you don't have the telnet service on real-server
+192.168.1.8 then run
+<P>$ipvsadm -a -t 192.168.1.110:23 -r 192.168.1.8
+<P>then run ipvsadm in one window.
+<P>$ipvsadm
+<P>and leave the output on the screen. In another window run
+<P>$ ./virtualserver.alert   -V 192.168.1.110:23 -R 192.168.1.8
+<P>this will send the down command to ipvsadm. The entry for telnet
+on real-server 192.168.1.8 will be removed (run ipvsadm again).
+<P>Then run
+<P>$ ./virtualserver.alert -u -V 192.168.1.110:23 -R 192.168.1.8
+<P>and the telnet service to 192.168.1.8 will be restored in the
+ipvsadm table.
+<P>
+<H2><A NAME="ss19.11">19.11 Running mon with LVS</A>
+</H2>
+
+<P>
+<P>Connect all network connections for the LVS and install a VS-DR
+LVS with INITIAL_STATE="off" to a single telnet real-server. Start
+with a file like lvs_dr.conf.single_telnet_off adapting the IP's
+for your situation and produce the mon_xxx.cf and rc.lvs_xxx
+file. Run rc.lvs_xxx on the director and then the real-server.
+<P>The output of ipvsadm (on the director) should be
+<P>
+<PRE>
+grumpy:/etc/mon# ipvsadm
+IP Virtual Server (Version 0.9)
+Protocol Local Address:Port Scheduler
+      -> Remote Address:Port   Forward Weight ActiveConn FinConn
+TCP 192.168.1.110:23 rr
+</PRE>
+<P>showing that the scheduling (rr) is enabled, but with no entries
+in the ipvsadm routing table. You should NOT be able to telnet
+to the VIP (192.168.1.110) from a client.
+<P>Start mon (it's on the director). Since the real-server is already
+online, mon will detect a functional telnet on it and trigger an
+upalert for mail.alert and for virtualserver.alert. At the same
+time as the upalert mail arrives run ipvsadm again. You should
+get
+<P>
+<PRE>
+grumpy:/etc/mon# ipvsadm
+IP Virtual Server (Version 0.9)
+Protocol Local Address:Port Scheduler
+      -> Remote Address:Port   Forward Weight ActiveConn FinConn
+TCP 192.168.1.110:23 rr
+      -> 192.168.1.8:23        Route   1      0          0
+</PRE>
+<P>which shows that mon has run ipvsadm and added direct routing of
+telnet to real-server 192.168.1.8. You should now be able to
+telnet to 192.168.1.110 from a client and get the login prompt
+for machine 192.168.1.8.
+<P>Logout of this telnet session, and pull the network cable to the
+real-server. You will get a mail alert and the entry for
+192.168.1.8 will be removed from the ipvsadm output.
+<P>Plug the network cable back in and watch for the upalert mail and
+the restoration of LVS to the real-server (run ipvsadm again).
+<P>If you want to, confirm that you can do this for http instead of
+telnet.
+<P>You're done. Congratulations. You can use the mon_xxx.cf files
+generated by configure.pl from here.
+<P>
+<H2><A NAME="agent"></A> <A NAME="ss19.12">19.12 Why is the LVS monitored for failures by an external agent rather than by the kernel?</A>
+</H2>
+
+<P>
+<P>(Patrick Kormann <CODE>pkormann@datacomm.ch</CODE>)
+<P>
+<PRE>
+> Wouldn't it be nice to have a
+> switch that would tell ipvsadm 'If one of the real-servers is
+> unreachable/connection refused, take it out of the list of real servers for
+> x seconds' or even 'check the availability of that server every x seconds,
+> if it's not available, take it out of the list, if it's available again, put
+> it in the list'.
+</PRE>
+<P>(Lars)
+That does not belong in the kernel. This is definetely the job of a userlevel
+monitoring tool.
+<P>I admit it would be nice if the LVS patch could check if connections directed
+to the real-server were refused and would log that to userlevel though, so we
+could have even more input available for the monitoring process.
+<P>
+<PRE>
+> and quirks to make lvs a real high-availability system. The problem is that
+> all those external checks are never as effective as a decition be the
+> 'virtual server' could be.
+</PRE>
+<P>That's wrong.
+<P>A userlevel tool can check reply times, request specific URLs from the servers
+to check if they reply with the expected data, gather load data from the real
+servers etc. This functionality is way beyond kernel level code.
+<P>
+<P>(Michael Sparks <CODE>zathras@epsilon3.mcc.ac.uk</CODE>)
+<P>Personally I think monitoring of systems is probably one of the things the
+lvs system shouldn't really get into in it's current form. My rationale
+for this is that LVS is a fancy packet forwarder, and in that
+job it excels.
+<P>For the LVS code to do more than this, it would require for TCP services
+the ability to attempt to connect to the *service* the kernel is load
+balancing - which would be a horrible thing for a kernel module to do. For
+UDP services it would need to do more than pinging...  However, in neither
+case would you have a convincing method for determining if the *services*
+on those machines was still running effectively, unless you put a large
+amouunt of protocol knowledge into the kernel. As a result, you would
+still need to have external monitoring systems to find out whether the
+services really are working or not.
+<P>
+<P>For example, in the pathological case (of many that we've seen :-) of a
+SCSI subsystem failure resulting in indestructable inodes on a cache box,
+a cache box can reach total saturation in terms of CPU usage, but still
+respond correctly to pings and TCP connections. However nothing else (or
+nothing much) happens due to the effective system lockup. The only way
+round such a problem is to have a monitoring system that knows about this
+sort of failure, and can then take the service out.
+<P>There's no way this sort of failure could be anticipated by anyone, so
+putting this sort of monitoring into the kernel would create a false
+illusion of security - you'd still need an auxillary monitoring system.
+Eg - it's not just enough for the kernel to mark the machine out of
+service - you need some useful way of telling people what's gone wrong (eg
+setting off people's pager's etc), and again, that's not a kernel thing.
+<P>(Lars)
+Michael, I agree with you.
+<P>However, it would be good if LVS would log the failures it detects. ie, I
+_think_ it can notice if a client receives a port unreachable in response to a
+forwarded request if running masquerading, however it cannot know if it is
+running DR or tunneling because in that case it doesn't see the reply to the
+client.
+<P>(Wensong)
+> _think_ it can notice if a client receives a port unreachable in response to a
+<P>Currently, the LVS can handle ICMP packets for virtual services, and
+forward them to the right place. It is easy to set the weight of the
+destination zero or temperarily remove the dest entry directly, if an
+PORT_UNREACH icmp from the server to the client passes through the LVS
+box.
+<P>If we want the kernel to notify monitoring software that a real server
+is down in order to let monitoring software keep consistent state of
+virtual service table, we need design efficient way to notify
+monitoring, more code is required. Anyway, there is a need to develop
+efficient communication between the LVS kernel and monitoring software,
+for example, monitoring software get the connection number efficiently,
+it is time-consuming to parse the big IPVS table to get the connection
+numbers; how to efficiently support ipvsadm -L &lt;protocol, ip, port&gt;? it
+is good for applications like Ted's 1024 virtual services. I checked the
+procfs code, it still requires one write_proc and one read_proc to get
+per virtual service print, it is a little expensive. Any idea?
+<P>
+<PRE>
+(Julian Anastasov &lt;tt/uli@linux.tu-varna.acad.bg/)
+> Currently, the LVS can handle ICMP packets for virtual services, and
+> forward them to the right place. It is easy to set the weight of the
+> destination zero or temperarily remove the dest entry directly, if an
+> PORT_UNREACH icmp from the server to the client passes through the LVS
+> box.
+</PRE>
+<P>PORT_UNREACH can be returned when the packet is rejected from the
+real server's firewall. In fact, only UDP returns PORT_UNREACH when the
+service is not running. TCP returns RST packet. We must carefully handle
+this (I don't know how) and not to stop the real server for all clients if
+we see that one client is rejected. And this works only if the LVS box is
+default gw for the real servers, i.e. for any mode: MASQ(it's always def
+gw), DROUTE and TUNNEL (PROT_UNREACH can be one of the reasons not to
+select other router for the outgoing traffic for these two modes). But LVS
+cn't detect the outgoing traffic for DROUTE/TUNNEL mode. For TUNNEL it can
+be impossible if the real servers are not on the LAN.
+<P>So, the monitoring software can solve more problems. The TCP stack
+can return PORT_UNREACH but if the problem with the service in the real
+server is more complex (real server died, daemon blocked) we can't expect
+PORT_UNREACH. It is send only when the host is working but the daemon is
+stooped. Please restart this daemon. So, don't rely on the real server,
+in most of the cases he can't tell  "Please remove me from the VS
+configuration, I'm down" :) This is job for the monitoring software to
+exclude the destinations and even to delete the service (if we switch to
+local delivery only, i.e. when we switch from LVS to WEB only mode for
+example). So, I vote for the monitoring software to handle this :)
+<P>(Wensong)
+Yeah, I prefer that monitoring software handles this too, because it
+is a unified approach for VS-NAT, VS-Tun and VS-DR, and monitoring
+software can detect more failures and handle more things according to
+the failures.
+<P>What we discuss last time is that the LVS kernel sets the destination
+entry unavailable in virtual server table if the LVS detect some icmp
+packets (only for VS-NAT) or RST packet etc. This approach might
+detect this kinds of problems just a few seconds earlier than the
+monitoring software, however we need more code in kernel to notify the
+monitoring software that kernel changes the virtual server table, in
+order to let the monitoring software keep the consistent view of the
+virtual server table as soon as possible. Here is a tradeoff.
+Personally, I prefer to keeping the system simple (and effective),
+only one (monitoring software) makes decision and keeps the consistent
+view of VS table.
+<P>
+<HR>
+<A HREF="LVS-HOWTO-20.html">Next</A>
+<A HREF="LVS-HOWTO-18.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc19">Contents</A>
+</BODY>
+</HTML>

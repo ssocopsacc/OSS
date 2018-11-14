@@ -1,0 +1,324 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO: Choose LVS Forwarding Type</TITLE>
+ <LINK HREF="LVS-HOWTO-6.html" REL=next>
+ <LINK HREF="LVS-HOWTO-4.html" REL=previous>
+ <LINK HREF="LVS-HOWTO.html#toc5" REL=contents>
+</HEAD>
+<BODY>
+<A HREF="LVS-HOWTO-6.html">Next</A>
+<A HREF="LVS-HOWTO-4.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc5">Contents</A>
+<HR>
+<H2><A NAME="forwarding"></A> <A NAME="s5">5. Choose LVS Forwarding Type</A></H2>
+
+<P>
+<P>
+<H2><A NAME="ss5.1">5.1 Comparison of VS-NAT, VS-DR and VS-Tun</A>
+</H2>
+
+<P>
+<P>The instructions in the following sections show how to set
+up LVS in VS-NAT, VS-Tun and VS-DR modes for the service telnet.
+<P>If you just want to demonstrate to yourself that you can setup an
+LVS, then VS-NAT has the advantage that any OS can be used on the
+real-servers, and that no modifications are needed for the kernel
+on the real-server(s).
+<P>If you have a linux machine with a 2.0.x kernel, then it can be
+used as a real-server for an LVS operating in any mode without any
+modifications.
+<P>Because VS-NAT was the first mode of LVS developed, it was the
+type first used by people setting an LVS. For production work
+VS-DR scales to much higher throughput and is the most common
+setup for production. However for a simple test, VS-NAT only
+requires patching 1 machine (the director) and an unmodified
+machine of any OS for a real-servers. After a simple test, unless
+you need the features of VS-NAT (ability to use real-servers that
+provide services not found on Linux machines, port remapping,
+real-servers with primitive tcpip stacks - e.g./printers, services
+that initiate connect requests such as identd),
+then it would be best to move to VS-DR.
+<P>Here are the constraints for choosing the various flavors of
+LVS: VS-NAT (network address translation), VS-Tun (tunnelling)
+and VS-DR (direct routing).
+<P>
+<PRE>
+                     VS-NAT          VS-Tun            VS-DR
+
+server OS            any           must tunnel         most
+server mods          none          tunl must not arp   lo must not arp
+port remapping       yes           no                  no
+server network       private       on internet         local
+                     (remote    or      local)          -
+server number        low           high                high
+client connnects to  VIP           VIP                 VIP
+server default gw    director      own router          own router
+</PRE>
+<P>
+<H2><A NAME="performance"></A> <A NAME="ss5.2">5.2 Expected LVS performance</A>
+</H2>
+
+<P>
+<P>If you are just setting up an LVS to see if you can set one up,
+then you don't care what your performance is. When you want to
+put one on-line for other people to use, you'll want to know
+the expected performance.
+<P>On the assumption that you have tuned/tweeked your farm of real-servers 
+and you know that they are capable of
+delivering data to clients at a total rate of bits/sec or packets/sec,
+you need to design a director capable of routing this number of 
+requests and replies for the clients.
+<P>Before you can do this, 
+some background information on networking hardware is required. 
+At least for Linux (the OS I've measured, see 
+<A HREF="http://www.linuxvirtualserver.org/Joseph.Mack/performance/single_realserver_performance.html">performance data for single real-server LVS</A>), 
+a network rated at 100Mbps is not 100Mbps all the time. 
+It's only 100Mbps when continuously carrying packets of mtu size (1500bytes).
+A packet with 1 bit of data takes as long to transmit as a full mtu sized packet.
+If your packets are &lt;ack&gt;s, or 1 character packets from
+your telnet editing session or requests for http pages and images, 
+you'll barely reach 1Mbps on the same network. 
+On the 
+<A HREF="http://www.linuxvirtualserver.org/Joseph.Mack/performance/single_realserver_performance.html">performance page</A>, you'll notice that you can get higher hit rates on
+a website as the size of the hit targets (in bytes) gets smaller. 
+Hit rate is not neccessarily a good indicator of network throughput.
+<P>Tcpip can't use the full 100Mbps of 100Mbps network hardware, 
+as most packets are paired (data, ack; request, ack).
+A link carrying full mtu data packets and their corresponding &lt;ack&gt;s, will
+presumably be only carrying 50Mbps.
+A better measure of network capacity is the packet throughput.
+An estimate of the packet throughput comes from the network capacity 
+(100Mbps)/mtu size(1500bytes) = 8333 packets/sec.
+(Thanks to Pat O'Rourke for the correct number here. 
+In previous versions of this document, I've stated &quot;800&quot; here.
+This was because my calculator didn't accept the last &quot;0&quot; when
+I entered 10^9).
+<P>Thinking of a network as 100Mbps rather than <EM>ca.</EM>8000packets/sec 
+is a triumph of marketing. 
+When offered the choice, everyone will buy network hardware rated at 
+100Mbps even though this capacity can't be used with your protocols, 
+over another network which will run continuously at 8000packets/sec for all protocols.
+Only for applications like ftp will near full network capacity be reached
+(then you'll be only running at 50% of the rated capacity as
+half the packets are &lt;ack&gt;s).
+<P>A netpipe test shows that some packets must be "small". 
+Julian's 
+<A HREF="LVS-HOWTO-18.html#show_traffic">show_traffic script</A>
+shows that for small packets (&lt;128bytes), the throughput is constant
+at 1200packets/sec. As packets get bigger (upto mtu size), the packet
+throughput decreases to 700packets/sec, and then increasing to 2600packets/sec
+for large packets. 
+(My real-servers are 75MHz pentiums and can't saturate the 100Mbps network.)
+<P>The constant througput in packets/sec is a first order 
+approximation of of tcpip network throughput and is the
+best information we have to predict director performance.
+<P>In the case where a client is in an exchange of small packets (&lt;mtu size)
+with a real-server in a VS-DR LVS, each of the links 
+(client-director, director-realserver, realserver-client) would be saturated
+with packets, although the bps rate would be low. This is the typical
+case for non-persistent http when 7 packets are required for the setup
+and termination of the connection, 2 packets are required for data passing
+(eg the request GET /index.html and the reply) and an &lt;ack&gt; for each of these. 
+Thus only 1 out of 11 packets is likely to be near mtu size, and throughput will
+be 10% of the rated bps throughput even though the network is saturated.
+<P>The first thing to determine then is the rate at which the real-servers
+are generating/receiving packets. 
+If the real-servers are network limited, 
+i.e. the real-servers are returning data in memory cache
+(eg a disk-less squid) and have 100Mpbs connections,
+then each real-server will saturate a 100Mbps link.
+If the service on the real-server requires disk or CPU access, 
+then each real-server will be using proportionately less of the network. 
+If the real-server is generating images on demand (and hence is
+compute bound) then it may be using very little of the network
+and the director can be handling packets for another real-server.
+<P>The forwarding method affects packet throughput.
+With VS-NAT all packets go through the director in both directions. 
+As well the VS-NAT director has to rewrite incoming and reply packets for each 
+real-server. 
+This is a compute intensive process.
+In a VS-DR or VS-Tun LVS, the incoming packets are just forwarded
+(requiring little intervention by the director's CPU) and 
+replies from the real-servers return to the client directly 
+by a separate path
+(via the real-server's default gw) and aren't seen by the director.
+<P>In a network limited LVS, for the same hardware, 
+because there are separate paths for incoming
+and returning packets with VS-DR and VS-Tun, 
+the maximum (packet) throughput is twice that of VS-NAT. 
+Because of the rewriting of packets in VS-NAT,
+the load average on a VS-NAT director will be higher than for a 
+VS-DR or VS-Tun director managing twice the number of packets. 
+<P>In a network bound situation, a single real-server will saturate
+a director of similar hardware.
+This is a relatively unusual case for the LVS's deployed so far.
+However it's the situation where replies are from data in the 
+memory cache on the real-servers (eg squids). 
+<P>With a VS-DR LVS, the real-servers have their own connection to the internet, 
+the rate limiting step is the NIC on the director 
+which accepts packets (mostly &lt;ack&gt;s) from the clients.
+The incoming network is saturated for packets but is only carrying low bps traffic, 
+while the real-servers are sending full mtu sized 
+packets out their default gw (presumably the full 100Mbps). 
+<P>The information needed to design your director then is simply
+the number of packets/sec your real-server farm is delivering.
+The director doesn't know what's in the packets (being an 
+L4 switch) and doesn't care how big they are 
+(1 byte of payload or full mtu size).
+<P>If the real-servers are network limited, then the director
+will need the same CPU and network capacity as the total
+of your real-servers. If the real-servers are not network
+limited, then the director will need correspondingly less capacity.
+<P>If you have 7 network limited real-servers with 100Mbps NICs, then
+they'll be generating an average of 7x8000 = 50k packets/sec. 
+Assuming the packets arrive randomly the standard deviation for
+1 seconds worth of packets is +/- sqrt(50000)=200 (ie it's small
+compared to the rate of arrival of packets). 
+You should be able to connect these real-servers to a 1Gbps NIC
+via a switch, without saturating your outward link.
+<P>If you are connected to the outside world by a slow connection (eg T1 line), 
+then no matter how many 8000packet/sec real-servers you have, 
+you are only going to get 1.5Mbps throughput 
+(or half that, since half the packets are &lt;ack&gt;s).
+<P>Note: The carrying capacity of 100Mbps network of 8000packets/sec
+may only apply to tcpip exchanges. 
+My 100Mbps network will carry 10,000 SYN packets/sec when tested
+with Julian's testlvs program.
+<P>Wayne <CODE>wayne@compute-aid.com</CODE> 03 Apr 2001 
+<BLOCKQUOTE>
+The performance page calculate the ack as 50% or so the
+total packets.  I think that might not accurate.  Since in the
+twist-pair and full duplex mode, ack and request are travelling
+on two different pairs.  Even in the half duplex mode, the packets
+for two directions are transmit over two pairs, one for send, one
+for receive, only the card and driver can handle them in full
+duplex or half duplex mode.  So the packets would be 8000
+packets/sec all the times for the full duplex cards.
+</BLOCKQUOTE>
+<P>Unfortunately we only can approximately predict the performance of
+an LVS director. Still the best estimates come from comparing with
+a similar machine. 
+<P>The 
+<A HREF="http://www.linuxvirtualserver.org/Joseph.Mack/performance/single_realserver_performance.html">performance page</A> shows that a 133MHz pentium director can 
+handle 50Mbps throughput. 
+With VS-NAT the load average on the director is unusably high, 
+but with VS-DR, the director has a low load average.
+<P>Statements on the website indicate that a 300MHz pentium
+VS-DR director running a 2.2.x kernel can handle 
+the traffic generated by a 100Mbps link to the clients. 
+<P>Other statements indicate that single CPU high end (800MHz) directors 
+cannot handle 1Gbps networks. 
+Presumably multiple directors or SMP directors will be needed for Gbps networks. 
+<P>From: Jeffrey A Schoolcraft <CODE>dream@dr3amscap3.com</CODE> 7 Feb 2001
+<BLOCKQUOTE>
+I'm curious if there are any known DR LVS bottlenecks?  My company had the
+opportunity to put LVS to the test the day following the superbowl when we
+delivered 12TB of data in 1 day, and peaked at about 750Mbps.
+<P>
+<P>In doing this we had a couple of problems with LVS (I think they were with
+LVS).  I was using the latest lvs for 2.2.18, and ldiretord to keep the
+machines in and out of LVS.  The LVS servers were running redhat with an
+EEPro100.  I had two clusters, web and video.  The web cluster was a couple of
+1U's with an acenic gig card, running 2.4.0, thttpd, with a somewhat
+performance tuned system (parts of the C10K).  At peak our LVS got slammed
+with 40K active connections (so said ipvsadmin).  When we reached this number,
+or sometime before, LVS became in-accessible.  I could however pull content
+directly from a server, just not through the LVS.  LVS was running on a single
+proc p3, and load never went much above 3% the entire time, I could execute
+tasks on the LVS but http requests weren't getting passed along.
+<P>A similar thing occurred with our video LVS.  While our real servers aren't
+quite capable of handling the C10K, we did about 1500 a piece and maxed out at
+about 150Mbps per machine. I think this is primarily modem users fault.  I
+think we would have pushed more bandwidth to a smaller number of high
+bandwidth users (of course).
+<P>I know this volume of traffic choked LVS.  What I'm wondering is, if there is
+anything I could do to prevent this.  Until we got hit with too many
+connections (mostly modems I imagine) LVS performed superbly.  I wonder if we
+could have better performance with a gig card, or some other algorithm (I
+started with wlc, but quickly changed to wrr because all the rr calculations
+should be done initially and never need to be done again unless we change
+weights, I thought this would save us).
+<P>Another problem I had was with ldirectord and the test (negotiate, connect).
+It seemed like I needed some type of test to put the servers in initially,
+then too many connections happened so I wanted no test (off), but the servers
+would still drop out from ldirectord.  That's a snowball type problem for my
+amount of traffic, one server gets bumped because it's got too many
+connections, and then the other servers get over-loaded, they'll get dropped
+to, then I'll have an LVS directing to localhost.
+<P>So, if anyone has pushed DR LVS to the limits and has ideas to share on how to
+maximize it's potential for given hardware, please let me know.
+</BLOCKQUOTE>
+<P>
+<H2><A NAME="ss5.3">5.3 Initial setup steps</A>
+</H2>
+
+<P>
+<P>Here's some rules of thumb until you know enough to make informed
+decisions.
+<P>
+<H3>Choose forwarding type</H3>
+
+<P>
+<P>choose in this order
+<P>
+<UL>
+<LI>VS-DR default, has high throughput, can be setup on most OS's.</LI>
+<LI>VS-NAT, lower throughput, higher latency. 
+Real-server only needs tcpip stack 
+(ie any OS, even a network printer). 
+Works for multiple instances of services 
+(ie multiple copies of demon running on several different ports).</LI>
+<LI>VS-Tun, Linux only real-servers. Same throughput as VS-DR. 
+Needed if real-server on different network to director 
+(eg in another location).</LI>
+</UL>
+<P>
+<H3>Choose number of networks</H3>
+
+<P>
+<P>The real-servers are normally run on a private network (eg 192.168.1.0/24). 
+They are not contacted by clients directly. Sometimes the real-servers
+are machines (on the local network) also being used for other things, in
+which case leave them on this network.
+<P>The director is contacted by client(s) on the VIP. 
+If the VIP must be publically
+available, then it will be on a different network to the real-servers,
+in which case you will have a two network LVS. The VIP then will
+be in the network that connects the director to the router
+(or test client). If the client(s) are on the same network as
+the real-servers, then you'll only have a one network LVS.
+<P>
+<H3>Choose number of NICs on director</H3>
+
+<P>
+<P>If the director is in a 2 network LVS, then having 2 NICs on the 
+director (one for each network) will increase throughput (as
+long as something else doesn't become rate limiting, eg the CPU
+speed or the PCI bus). 
+<P>You can have 1 NIC on the director with
+a 2 network LVS. This is easy to do for VS-NAT (for which 
+there is an example conf file). Doing the same this for
+VS-DR or VS-Tun requires more though and is left as
+an exercise for the reader.  
+<P>The configure script will handle 2 NICs
+on the director. 
+To increase throughput further, the director 
+could have a NIC for each real-server. The configure
+script doesn't handle this (yet - let me know if you'd like it).
+<P>
+<H3>Pick a configure script</H3>
+
+<P>
+<P>If you're using the 
+<A HREF="LVS-HOWTO-9.html#configure">configure script</A>
+to setup your LVS, pick the appropriate 
+lvs*.conf.* file and edit to suit you.
+<P>
+<HR>
+<A HREF="LVS-HOWTO-6.html">Next</A>
+<A HREF="LVS-HOWTO-4.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc5">Contents</A>
+</BODY>
+</HTML>

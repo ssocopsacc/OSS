@@ -1,0 +1,134 @@
+### Section 1: Global Environment
+#ServerType standalone
+ServerRoot "/etc/sysconfig/ha"
+
+LockFile /var/lock/subsys/piranha-gui.lock
+PidFile /var/run/piranha-httpd.pid
+ScoreBoardFile /var/log/piranha/apache_runtime_status
+Timeout 300
+KeepAlive Off
+MinSpareServers 1
+MaxSpareServers 1
+StartServers 1
+MaxClients 4
+
+LoadModule auth_basic_module  modules/mod_auth_basic.so
+LoadModule auth_digest_module modules/mod_auth_digest.so
+LoadModule authn_file_module  modules/mod_authn_file.so
+LoadModule authn_alias_module modules/mod_authn_alias.so
+LoadModule authn_anon_module  modules/mod_authn_anon.so
+LoadModule authn_dbm_module   modules/mod_authn_dbm.so
+LoadModule authn_default_module modules/mod_authn_default.so
+LoadModule authz_host_module  modules/mod_authz_host.so
+LoadModule authz_user_module  modules/mod_authz_user.so
+LoadModule authz_owner_module modules/mod_authz_owner.so
+LoadModule authz_groupfile_module modules/mod_authz_groupfile.so
+LoadModule authz_dbm_module   modules/mod_authz_dbm.so
+LoadModule authz_default_module modules/mod_authz_default.so
+LoadModule vhost_alias_module modules/mod_vhost_alias.so
+LoadModule env_module         modules/mod_env.so
+#LoadModule config_log_module  modules/mod_log_config.so
+LoadModule log_config_module  modules/mod_log_config.so
+#LoadModule agent_log_module   modules/mod_log_agent.so
+#LoadModule referer_log_module modules/mod_log_referer.so
+LoadModule mime_module        modules/mod_mime.so
+LoadModule negotiation_module modules/mod_negotiation.so
+LoadModule status_module      modules/mod_status.so
+LoadModule info_module        modules/mod_info.so
+LoadModule include_module     modules/mod_include.so
+LoadModule autoindex_module   modules/mod_autoindex.so
+LoadModule dir_module         modules/mod_dir.so
+LoadModule cgi_module         modules/mod_cgi.so
+#LoadModule asis_module       modules/mod_asis.so
+LoadModule actions_module     modules/mod_actions.so
+LoadModule userdir_module     modules/mod_userdir.so
+LoadModule alias_module       modules/mod_alias.so
+LoadModule rewrite_module     modules/mod_rewrite.so
+LoadModule proxy_module       modules/mod_proxy.so
+LoadModule expires_module     modules/mod_expires.so
+LoadModule headers_module     modules/mod_headers.so
+LoadModule usertrack_module   modules/mod_usertrack.so
+LoadModule setenvif_module    modules/mod_setenvif.so
+
+LoadModule php5_module        modules/libphp5.so    
+
+#
+# Cause the PHP interpreter handle files with a .php extension.
+#
+#<Files *.php>
+#    SetOutputFilter php
+#    SetInputFilter php
+#    LimitRequestBody 524288
+#</Files>
+                                                                                                                
+#
+# Add index.php to the list of files that will be served as directory
+# indexes.
+#
+DirectoryIndex index.php
+
+
+
+### Section 2: 'Main' server configuration
+Listen 3636
+User piranha
+Group piranha
+ServerAdmin piranha@localhost
+DocumentRoot "/etc/sysconfig/ha/web"
+
+Alias	/piranha/	"/etc/sysconfig/ha/web/"
+
+DefaultType text/plain
+AccessFileName .htaccess
+TypesConfig /etc/mime.types
+DirectoryIndex index.html index.htm index.shtml index.cgi
+
+<Location /server-info>
+    SetHandler server-info
+    Order deny,allow
+    Deny from all
+</Location>
+
+<Directory />
+    Options FollowSymLinks
+    AllowOverride None
+</Directory>
+
+<Directory /etc/sysconfig/ha/web>
+    AllowOverride NONE
+    Options  FollowSymLinks
+    Order deny,allow
+	# deny from all
+	Allow from all
+</Directory>
+
+<Directory /etc/sysconfig/ha/web/secure>
+    AllowOverride NONE
+    Options  FollowSymLinks
+    Order deny,allow
+	# deny from all
+	Allow from all
+</Directory>
+
+#<Directory /etc/sysconfig/ha/web/secure>
+#    AllowOverride All
+#    Order deny,allow
+#    Allow from all
+#    AuthUserFile "/etc/sysconfig/ha/conf/piranha.passwd"
+#    AuthGroupFile /dev/null
+#    AuthName "access to the piranha web GUI"
+#    AuthType Basic
+#    <Limit GET>
+#        require user piranha
+#    </Limit>
+#</Directory>
+
+HostnameLookups On
+ErrorLog /var/log/piranha/piranha-gui
+LogLevel warn
+LogFormat "%h %l %u %t \"%r\" %>s %b" common
+CustomLog /var/log/piranha/piranha-gui-access common
+
+AddType application/x-httpd-php .php4 .php3 .phtml .php
+AddType application/x-httpd-php-source .phps
+

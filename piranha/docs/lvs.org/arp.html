@@ -1,0 +1,208 @@
+<html>
+
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+<title>ARP problem in LVS/TUN and LVS/DR</title>
+</head>
+
+<body text="#000000" bgcolor="#ffffff"
+      link="#0062CE" vlink="#6C9EFF" alink="#ff0000">
+
+<h1>ARP problem in LVS/TUN and LVS/DR</h1>
+
+<p>In the LVS/TUN and LVS/DR clusters, the Virtual IP (VIP) addresses
+are shared by both the load balancer and real servers, because they
+all configure the VIP address on one of their interfaces. In some
+configurations that real servers are on the same network that the load
+balancer accepts request packets, if real servers answers arp request
+for the VIP, there will be race condition, no winner. Packets for the
+VIP may be sent to the load balancer at one time, to a real server at
+another time, to another real server at another time, and so on. Then,
+connections will be broken, everything will be in a mess, and the
+whole LVS cluster won't work. Therefore, in the LVS/TUN and LVS/DR
+cluster, we must guarantee that only the load balancer answers arp
+request for the VIP to accept incoming packets for virtual service,
+and the real servers(in the same network of load balancer) don't
+answer arp request for the VIP but can process packets destined for
+the VIP locally.</p>
+
+<p>Linux kernel 2.0.xx doesn't do arp response on loopback alias and
+tunneling interfaces, it is good for the LVS cluster. However, Linux
+kernel 2.2.xx does all arp responses of all its IP addresses except
+the loopback addresses (127.0.0.0/255.0.0.0) and multicast
+addresses. So, you will probably have problem in LVS/TUN or LVS/DR
+cluster of real servers running kernel 2.2.xx with instructions
+provided in other pages. After kernel 2.2.14, there is the "hidden"
+flag available to make interfaces hidden from ARP broadcast, thank 
+<a href="mailto:uli@linux.tu-varna.acad.bg">Julian Anastasov</a> and 
+<a href="mailto:kuznet@ms2.inr.ac.ru">Alexey Kuznetsov</a> for adding
+this nice ARP policy in the standard kernel!</p>
+
+<h1>1. The hidden interface approach</h1>
+
+<p>The configuration instructions to hide interface from ARP for LVS
+are as follows:</p>
+
+<blockquote>
+<pre>
+# Start the hiding interface functionality
+echo 1 > /proc/sys/net/ipv4/conf/all/hidden
+# Hide all addresses for this interface
+echo 1 > /proc/sys/net/ipv4/conf/&lt;interface_name&gt;/hidden
+</pre>
+</blockquote>
+
+<p>Note that once an interface is set hidden, all the addresses of the
+interface is hidden from ARP broadcast and being included in the ARP
+response of other addresses. So, it is not good to configure VIP on
+the aliases of real Ethernet interfaces and make it hidden, unless you
+have a unused Ethernet interface. 
+
+<p>For LVS/DR clusters, it is good to configure VIPs on the aliases of
+dummy or loopback device and hide the corresponding device. Then, you
+can configure as many VIPs as you want. It is simple to configure, no
+need to put more words here. :-)
+
+<p>For LVS/TUN clusters, first you need to configure tunl0 device up,
+then configure VIPs on the aliases of tunnel/dummy/loopback device and
+hide that device. A configuration example is as follows:</p>
+
+<blockquote>
+<pre>
+# Insert the ipip module
+insmod ipip
+# Make the tunl0 device up
+ifconfig tunl0 up
+# Start the hiding interface functionality
+echo 1 > /proc/sys/net/ipv4/conf/all/hidden
+# Hide all addresses for this tunnel device
+echo 1 > /proc/sys/net/ipv4/conf/tunl0/hidden
+# Configure a VIP on an alias of tunnel device
+ifconfig tunl0:0 &lt;VIP&gt; up
+</pre>
+</blockquote>
+
+<p>Note that configuring the tunl0 device up is to make the kernel
+decapsulate the received ipip packets correctly. Now, you can
+configure as many VIPs as you want for LVS/TUN. Many thanks must go to
+<a href="mailto:uli@linux.tu-varna.acad.bg">Julian</a> for all the
+instructions.
+
+<p>For the real servers running kernel 2.3.41 or later, you need apply
+<a href="mailto:uli@linux.tu-varna.acad.bg">Julian</a>'s hidden patch
+(hidden-2.3.41-1.diff) and rebuild
+the kernel.
+
+<h1>2. The redirect approach</h1>
+
+<p>For LVS/DR clusters, <a href="mailto:horms@vergenet.net">Horms</a>
+suggested a very cute redirect approach to get around the arp
+problem.</p>
+
+<blockquote>
+
+<p>I have been able to get around this problem by removing the
+interface alias on the real servers and setting up a redirect, using
+ipchains of the form:
+
+<pre>
+ipchains -A input -j REDIRECT &lt;port&gt; -d &lt;virtual-ip-address&gt; &lt;port&gt; -p &lt;protocol&gt;
+</pre>
+
+<p>This has the down side that the real servers essentially have to be
+Linux boxes to support this feature but it has the up side that the
+Linux Director can easily be moved to any machine on the LAN as it
+does not have to have an interface on a network other than the
+LAN. This has important implications in being able to fail over the
+Linux Director in a case of failure.
+</blockquote>
+
+For running multiple virtual services on a single VIP, you can specify
+multiple redirect commands for different ports, or you don't supply a
+port number so the comands could cover all ports in one hit per
+protocol as follows:
+
+<blockquote>
+<pre>
+ipchains -A  input -j REDIRECT -d &lt;VIP&gt; -p tcp
+ipchains -A  input -j REDIRECT -d &lt;VIP&gt; -p udp
+</pre>
+</blockquote>
+
+<p>For LVS/TUN clusters, you can simply configure tunl0 up so that the
+system can decapsulate ipip packets properly, then add the REDIRECT
+commands for VIPs.
+
+<h1>3. The policy routing approach</h1>
+
+<a href="mailto:uli@linux.tu-varna.acad.bg">Julian</a> suggested to
+use the advanced policy routing approach to get around the ARP problem
+of the real servers. For example, 172.26.20.118 is the VIP address,
+and the commands are as follows:
+
+<blockquote>
+<pre>
+# Block  access from the  LAN to the  real server's VIP.  By
+# this  way we ignore the router's ARP probes. The drawback:
+# we  ignore the  client's probes too.   We have  to do this
+# because the client on the LAN can receive replies from all
+# real servers
+ip rule add prio 99 from 172.26.20/24 table 99
+ip route add table 99 blackhole 172.26.20.118
+
+# Now  accept  locally  any  other  traffic,  i.e.  not from
+# 172.26.20/24
+ip rule add prio 100 table 100
+ip route add table 100 local 172.26.20.118 dev lo
+</pre>
+</blockquote>
+
+Policy routing is faster than transparent proxy, but the client on the
+same LAN cannot access the virtual service on the VIP. The real
+servers ignore the traffic from the LAN to the VIP, in order to
+discard the ARP request for the VIP too.
+
+<h1>4. Old patches making interfaces not to arp on kernel 2.2.13 or earlier</h1>
+
+<p>Here are two patches to make loopback alias and tunneling
+interfaces not do arp response in kernel 2.2. One is the 
+sdw_fullarpfix.patch from <a
+href="mailto:sdw@lig.net">Stephen D. Williams</a>; the other is 
+arp_invisible-2213-2.diff (dated
+1999/11/23) from <a href="mailto:uli@linux.tu-varna.acad.bg">Julian
+Anastasov</a>.</p>
+
+<p>Julian's ARP patch for kernel 2.2.13 adds the ability to configure
+the dummy (local and tunnel too) interfaces as invisible to the ARP
+queries and replies. It uses sysctl
+/proc/sys/net/ipv4/conf/*/arp_invisible to configure if an interface
+is visible or not.  The default value of arp_invisible is 0 for
+interfaces. If the value is set 1 for an interface, then the ARP
+queries and replies for the interface will be skipped. The
+configuration example is as follows:
+
+<blockquote>
+<pre>
+# Global enable, you can use it only once
+echo 1 > /proc/sys/net/ipv4/conf/all/arp_invisible
+# Hide the interface and don't reply for it
+echo 1 > /proc/sys/net/ipv4/conf/&lt;interface_name&gt;/arp_invisible
+</pre>
+</blockquote>
+
+<p>Note that you just need apply the arp patch to the kernel code of
+real servers, needn't apply the ipvs patch on the real servers. Please
+send any comments on these patches to<a
+href="mailto:lvs-users@LinuxVirtualServer.org"> the LVS mailing
+list</a>.</p>
+ 
+<p><hr>
+
+<p align="center">
+<font size="-1">
+$Id: arp.html,v 1.2 2001/06/07 20:09:39 copeland Exp $
+<br>Created on: 1999/11/14
+</font>
+
+</body>
+</html>

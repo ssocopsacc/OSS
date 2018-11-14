@@ -1,0 +1,76 @@
+LVS 8 "Thu May 10 2001" 
+4
+NAME
+fos - failover services daemon to control the Red Hat clustering services. 
+SYNOPSIS
+fos [-c \fIcfgfile\fP|--configfile=\fIcfgfile\fP] [-n|--nodaemon]
+[--nofork] [-t|--test-start] [-v|--verbose] [-f|--monitor] [-F|--active]
+[-?|--help] [--usage] [--version]
+DESCRIPTION
+fos reads the failover services section in the cluster configuration
+file lvs.cf. The program must be run with either "--monitor"
+or "--active" (or -f and -F) specified. If "--monitor" is used, the
+program starts nanny daemons to monitor IP services on a partner system.
+If "--active" is specified, the program starts the IP services on the
+local system by executing startup scripts. In both cases, a service
+failure or child daemon exiting will cause fos to terminate, which in
+turn will notify pulse that something failed and to initiate a cluster
+failover.
+
+fos is normally started by pulse although it can be run as a
+command line tool.  Similarly, the configuration file that tells \fBfos\fP
+what to do is normally edited by \fBpiranha\fR, but it can be manually edited.
+.sp
+All activity from \fBfos\fR is logged to \fBsyslog\fR (when \fBfos\fR is
+running as a daemon).
+.SH OPTIONS
+.TP
+.BI "-c "cfgfile "|--configfile=" cfgfile
+Normally, \fBfos\fR uses \fIlvs.cf\fR as its configuration file, but this
+can be overridden and another file can be used.
+.TP
+.BI "-n|--nodaemon"
+Normally, \fBfos\fR runs as a daemon, however using this option, \fBfos\fR
+runs in the foreground.  When running in this mode, all its output is sent to
+\fISTDOUT\fR instead of \fBsyslog\fR.
+.TP
+.BI "--nofork"
+Don't fork, but do perform disassociate.
+.TP
+.BI "-t|--test-start"
+Running \fBfos\fR is test mode allows the user to monitor what \fBfos\fR would
+actually do.  This is only useful during debugging.
+.TP
+.BI "-v|--verbose"
+Display additional debugging information as it runs.
+.TP
+.BI "-f|--monitor"
+Start and control nanny daemons that will monitor services (defined in
+the lvs.cf file) on a  partner computer system. Either this option,
+or "-F|--active" must be specified.
+.TP
+.BI "-F|--active"
+Start the IP services (defined in the lvs.cf file) on the local system
+using scripts. Either this option or "-f|--monitor" must be specified.
+.TP
+.BI "-?|--help"
+Shows a verbose usage listing.
+.TP
+.BI "--usage"
+Outputs a terse argument summary.
+.TP
+.BI "--version"
+Print program version.
+
+.SH SEE ALSO
+.IR ipvsadmn (8)
+.IR lvsd (8)
+.IR lvs.cf (5)
+.IR nanny (8)
+.IR pulse (8)
+.IR send_arp (8)
+
+.SH AUTHOR
+.nf
+Keith Barrett <kbarrett@redhat.com>
+.fi

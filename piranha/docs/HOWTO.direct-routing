@@ -1,0 +1,142 @@
+Piranha 0.7.7+ Direct Routing Mini-HOWTO v0.2.2
+
+Scope:  This only contains relevant information on how to make direct 
+routing to work with Piranha, it does not explain how to configure Piranha
+services.
+
+Setting up Piranha:
+
+(1) Ensure that the following packages are installed on the LVS directors:
+
+    * piranha
+    * ipvsadm
+
+   Ensure that the following packages are installed on the LVS real servers:
+
+    * iptables
+    * arptables_jf
+
+(2) Set up and log in to the Piranha web-based GUI.  See the following link:
+
+    http://www.redhat.com/docs/manuals/enterprise/RHEL-3-Manual/cluster-suite/ch-lvs-piranha.html
+
+(3) Configure Piranha for Direct Routing.
+
+    In the "GLOBAL SETTINGS" tab of the Piranha configuration tool, enter
+    the primary server's public IP address in the box provided.  The private
+    IP address is not needed/used for Direct Routing configurations.  In a 
+    direct routing configuration, all real servers as well as the LVS
+    directors share the same virtual IP addresses and should have the same
+    IP route configuration.  Click the "Direct Routing" button to enable
+    Direct Routing support on the Piranha LVS director node(s).
+
+(4) Configure services + real servers using the Piranha GUI.
+
+(5) Set up the each of the real servers using one of the methods below.
+
+===========================================================================
+
+Setting up the Real Servers, method #1: Using arptables_jf
+
+How it works:
+    Each real server has the virtual IP address(es) configured, so they
+    can directly route the packets.  ARP requests for the VIP are ignored
+    entirely by the real servers, and any ARP packets which might otherwise
+    be sent containing the VIPs are mangled to contain the real server's IP
+    instead of the VIPs.
+
+Main Advantages:
+  * Ability for applications to bind to each individual VIP/port the real
+    server is servicing.  This allows, for instance, multiple instances of
+    Apache to be running bound explicitly to different VIPs on the system.
+  * Performance.
+
+Disadvantages: 
+  * The VIPs can not be configured to start on boot using standard RHEL
+    system configuration tools.
+
+How to make it work:
+
+(1) BACK UP YOUR ARPTABLES CONFIGURATION.
+
+(2) Configure each real server to ignore ARP requests for each of the
+    virtual IP addresses the Piranha cluster will be servicing.  To do
+    this, first create the ARP table entries for each virtual IP address
+    on each real server (the real_ip is the IP the director uses to 
+    communicate with the real server; often this is the IP bound to
+    "eth0"):
+
+	arptables -A IN -d <virtual_ip> -j DROP
+	arptables -A OUT -d <virtual_ip> -j mangle --mangle-ip-s <real_ip>
+
+    This will cause the real servers to ignore all ARP requests for the
+    virtual IP addresses, and change any outbound ARP responses which 
+    might otherwise contain the virtual IP so that they contain the real
+    IP of the server instead.  The only node in the Piranha cluster which
+    should respond to ARP requests for any of the VIPs is the current
+    active Piranha LVS director node.
+
+    Once this has been completed on each real server, we can save the ARP
+    table entries for later.  Run the following commands on each real
+    server:
+
+	service arptables_jf save
+	chkconfig --level 2345 arptables_jf on
+
+    The second command will cause the system to reload the arptables
+    configuration we just made on boot - before the network is started.
+
+(3) Configure the virtual IP address on all real servers using 'ifconfig'
+    to create an IP alias:
+
+	ifconfig eth0:1 192.168.76.24 netmask 255.255.252.0 \
+		broadcast 192.168.79.255 up
+
+    Or using the iproute2 utility "ip", for example:
+
+	ip addr add 192.168.76.24/22 dev eth0
+
+    As noted previously, the virtual IP addresses can not be configured
+    to start on boot using the Red Hat system configuration tools. 
+    One way to work around this is to simply place these commands in
+    /etc/rc.d/rc.local.
+
+===========================================================================
+
+Setting up the Real Servers, method #2: Use iptables to tell the real
+servers to handle the packets.
+
+How it works:
+    We use an IP tables rule to create a transparent proxy so that a node
+    will service packets sent to the virtual IP address(es), even though
+    the virtual IP address does not exist on the system.
+
+Advantages:
+  * Simple to configure.
+  * Avoids the LVS "ARP problem" entirely.  Because the virtual IP 
+    address(es) only exist on the active LVS director, there _is_ no ARP
+    problem!
+
+Disadvantages:
+  * Performance.  There is overhead in forwarding/masquerading every
+    packet.
+  * Impossible to reuse ports.  For instance, it is not possible to run
+    two separate Apache services bound to port 80, because both must
+    bind to INADDR_ANY instead of the virtual IP addresses.
+
+(1) BACK UP YOUR IPTABLES CONFIGURATION.
+
+(2) On each real server, run the following for every VIP / port / protocol
+    (TCP, UDP) combination intended to be serviced for that real server:
+
+	iptables -t nat -A PREROUTING -p <tcp|udp> -d <vip> \
+		--dport <port> -j REDIRECT
+
+    This will cause the real servers to process packets destined for the
+    VIP which they are handed.
+
+	service iptables save
+	chkconfig --level 2345 iptables on
+
+    The second command will cause the system to reload the arptables
+    configuration we just made on boot - before the network is started.

@@ -1,0 +1,2106 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO: Services</TITLE>
+ <LINK HREF="LVS-HOWTO-11.html" REL=next>
+ <LINK HREF="LVS-HOWTO-9.html" REL=previous>
+ <LINK HREF="LVS-HOWTO.html#toc10" REL=contents>
+</HEAD>
+<BODY>
+<A HREF="LVS-HOWTO-11.html">Next</A>
+<A HREF="LVS-HOWTO-9.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc10">Contents</A>
+<HR>
+<H2><A NAME="s10">10. Services</A></H2>
+
+<P>
+<P>In principle setting up a service on an LVS is simple - you run the service
+on the real-server and forward the packets from the director. The simplest
+service to LVS is telnet: the client types a string of characters and the
+server returns a string of characters. 
+In practice some services interact more with their environment.
+Ftp needs another port. With http, the server needs to know
+its name (it will have the IP of real-server, but will need to proclaim
+to the client that it has the VIP). https is not listening to an
+IP, but to requests to a nodename. 
+This section shows the steps needed to get the common services working.
+<P>When trying something new on an LVS, always have the service telnet LVS'ed.
+If something is not working with your service, check how telnet is doing.
+Telnet has the advantages
+<P>
+<UL>
+<LI>telnetd listens on 0.0.0.0 on the real-server (at least under inetd)</LI>
+<LI>the exchange between the client and server is simple, well documented,</LI>
+<LI>the connection is non-persistence 
+(new sessions initiated from a client will make a new connection with the LVS)
+unencrypted and in ascii (you can follow it with tcpdump)</LI>
+<LI>the telnet client is available on most OS's</LI>
+</UL>
+<P>
+<H2><A NAME="ss10.1">10.1 setting up a new service</A>
+</H2>
+
+<P>
+<P>When setting up an LVS on a new service, the client-server semantics 
+are maintained
+<P>
+<UL>
+<LI>the client thinks it is connecting directly to a server</LI>
+<LI>the real-server thinks it is being contacted directly by the client</LI>
+</UL>
+<P>Example: nfs over LVS, real-server exports its disk, client mounts disk from LVS
+(taken from
+<A HREF="http://www.linuxvirtualserver.org/Joseph.Mack/performance/single_realserver_performance.html">performance data for single real-server LVS</A>), 
+<P>real-server:/etc/exportfs (real-server exports disk to client, here a host called client2)
+<PRE>
+/       client2(rw,insecure,link_absolute,no_root_squash) 
+</PRE>
+<P>The client mounts the disk from the VIP. Here's client2:/etc/fstab 
+(client mounts disk from machine with an /etc/hosts entry of VIP=lvs).
+<PRE>
+lvs:/   /mnt            nfs     rsize=8192,wsize=8192,timeo=14,intr 0 0
+</PRE>
+<P>The client makes requests to VIP:nfs. 
+The director must forward these packets to the real-servers.
+Here's the conf file for the director.
+<PRE>
+#lvs_dr.conf for nfs on realserver1
+.
+.
+VIP=eth1:110 lvs 255.255.255.255 192.168.1.110
+DIRECTOR_INSIDEIP=eth0 director-inside 192.168.1.0 255.255.255.0 192.168.1.255 
+DIRECTOR_DEFAULT_GW=client2
+SERVICE=t telnet rr realserver1 realserver2     #for sanity check on LVS
+#to call NFS the name "nfs" put the following in /etc/services
+#nfs             2049/udp
+#note the 'u' for service type in the next line
+SERVICE=u nfs rr realserver1                    #the service of interest
+SERVER_VIP_DEVICE=lo:0
+SERVER_NET_DEVICE=eth0
+SERVER_DEFAULT_GW=client
+#----------end lvs_dr.conf------------------------------------
+</PRE>
+<P>
+<H2><A NAME="ss10.2">10.2 services must be setup for forwarding type</A>
+</H2>
+
+<P>
+<P>The services must be setup to listen on the correct IP.
+With telnet, this is easy (telnetd listens on 0.0.0.0 under inetd),
+but most other services need to be configured to listen to an IP.
+<P>For VS-NAT, the packets will arrive with dst_addr=RIP, i.e.
+the service will be listening to the IP of the real-server. 
+When the real-server replies, then name of the machine returned
+will be the real-server, but the src_addr will be rewritten to
+be the VIP.
+<P>With VS-DR and VS-NAT the packets will arrive with dst_addr=VIP, 
+i.e. the service will be listening to an IP which is <EM>NOT</EM>
+the IP of the real-server. 
+Configuring the httpd to listen to the RIP rather than the VIP
+is a common cause of problems for people setting up http/https.
+<P>In both cases, in production, you will need to make the name of the
+machine given by the real-server to be the name associated with the VIP.
+<P>Note: if the real-server is Linux 2.4 and is 
+accepting packets by transparent proxy, then see the
+section on 
+<A HREF="LVS-HOWTO-15.html#TP">TP</A> for the IP the service
+should listen on.
+<P>
+<H2><A NAME="ss10.3">10.3 ftp general</A>
+</H2>
+
+<P>
+<P>ftp is a 2 port service in both active and passive modes. 
+In general multiport services or
+services which need to run together on the one real-server (eg http/https),
+can be handled by persistance or by Ted Pavlic's adaption of fwmark 
+(see 
+<A HREF="LVS-HOWTO-8.html#fwmark_passive_ftp">fwmark for passive ftp</A>). 
+<P>ftp comes in 2 flavors active/passive
+<P>
+<H2><A NAME="ss10.4">10.4 ftp (active) - the classic command line ftp</A>
+</H2>
+
+<P> 
+<P>This is a 2 port service. 
+<UL>
+<LI>port 20 - data (the files you want) </LI>
+<LI>port 21 - commands (eg ls)</LI>
+</UL>
+<P>
+<H3>ip_vs_ftp/ip_masq_ftp module helpers</H3>
+
+<P>
+<P>As part of the ip_vs build, the modules ip_masq_ftp (2.2.x) and
+ip_vs_ftp (2.4.x) are produced. 
+The ip_masq_ftp module is a patched version of the file which
+allowed ftp through a NAT box. This patch stopped its original
+function (at least in early kernels, don't know whether it
+still does or not). 
+<P>The 2.2.x ftp module is only available as a module 
+(<EM>i.e.</EM> it can't be built into the kernel).
+<P>Juri Haberland <CODE>juri@koschikode.com</CODE> 30 Apr 2001
+<BLOCKQUOTE>
+AFAIK the IP_MASQ_* parts can only be built as modules.
+They are automagically selected if you select CONFIG_IP_MASQUERADE.
+</BLOCKQUOTE>
+<P>Julian Anastasov May 01, 2001
+<BLOCKQUOTE>
+ 
+Starting from 2.2.19 the following module parameter is required:
+<P>
+<PRE>
+modprobe ip_masq_ftp in_ports=21
+</PRE>
+
+Joe
+<BLOCKQUOTE>
+I don't see it in /usr/src/linux/Documentation, ipvs-1.0.7-2.2.19/Changelog,
+google or dejanews. Is this an ip_vs feature or is it a new kernel feature?
+</BLOCKQUOTE>
+<P>
+<P>I see info only in the source. This is a new 2.2.19 feature.
+<P>ratz
+<BLOCKQUOTE>
+It's /usr/src/linux/net/ipv4/ip_masq_ftp.c:
+<PRE>
+ * Multiple Port Support
+ *      The helper can be made to handle up to MAX_MASQ_APP_PORTS (normally 12)
+ *      with the port numbers being defined at module load time.  The module
+ *      uses the symbol "ports" to define a list of monitored ports, which can
+ *      be specified on the insmod command line as
+ *              ports=x1,x2,x3...
+ *      where x[n] are integer port numbers.  This option can be put into
+ *      /etc/conf.modules (or /etc/modules.conf depending on your config)
+ *      where modload will pick it up should you use modload to load your
+ *      modules.
+ * Additional portfw Port Support
+ *      Module parameter "in_ports" specifies the list of forwarded ports
+ *      at firewall (portfw and friends) that must be hooked to allow
+ *      PASV connections to inside servers.
+ *      Same as before:
+ *              in_ports=fw1,fw2,...
+ *      Eg:
+ *              ipmasqadm portfw -a -P tcp -L a.b.c.d 2021 -R 192.168.1.1 21
+ *              ipmasqadm portfw -a -P tcp -L a.b.c.d 8021 -R 192.168.1.1 21
+ *              modprobe ip_masq_ftp in_ports=2021,8021
+</PRE>
+
+And it is a new kernel feature, not LVS feature.
+</BLOCKQUOTE>
+</BLOCKQUOTE>
+<P>what are these modules for: from ipvsadm(8) (ipvs 0.2.11)
+<BLOCKQUOTE>
+If  a virtual service is to handle FTP connections then persistence
+must be set for the virtual service if Direct  Routing  or  Tunnelling  is
+used  as  the forwarding mechanism. If Masquerading is used in conjunction
+with an FTP service than persistence is not necessary, but  the  ip_vs_ftp
+kernel module must be used.  This module may be manually inserted into the
+kernel using insmod(8)
+</BLOCKQUOTE>
+<P>From Julian 3 May 2001, the modules are required for
+<P>
+<UL>
+<LI>VS-NAT</LI>
+<LI>recommended for active ftp and mandatory for passive ftp, 
+if persistence tricks are not used when setting up the LVS.</LI>
+</UL>
+<P>The modules are <EM>NOT</EM> used for VS-DR or VS-Tun:
+in these cases persistence is used (or fwmarks version of persistence).
+<P>
+<H3>VS-NAT, 2.2.x director</H3>
+
+<P>
+<P>I found that ftp worked just
+fine without the module for 2.2.x (1.0.3-2.2.18 kernel).  
+<P>
+<H3>VS-NAT, 2.4.x director</H3>
+
+<P>
+<P>For 2.4.x you can connect with ftp without any extra modules, 
+but you can't &quot;ls&quot; the contents of the ftp directory.
+For that you need to load the ip_vs_ftp module.
+Without this module, your client's screen won't lock up,
+it just does nothing. If you then load the module,
+you can list the contents of the directory.
+<P>
+<H3>VS-DR, VS-Tun</H3>
+
+<P>
+<P>For VS-DR, VS-Tun active ftp needs persistence. 
+Otherwise it does not work, with or
+without ip_masq_ftp loaded. You can login, but
+attempting to do a `ls` will lockup the client
+screen. Checking the real-server, shows connections on
+ports 20,21 to paired ports on the client. 
+<P>
+<H2><A NAME="passive_ftp"></A> <A NAME="ss10.5">10.5 ftp (passive)</A>
+</H2>
+
+<P>
+<P>Passive ftp is used by netscape to get files from an ftp url like
+ftp://ftp.domain.com/pub/ . Here's an explanation of passive ftp
+from http://www.tm.net.my/learning/technotes/960513-36.html
+<P>
+<BLOCKQUOTE>
+If you can't open connections from Netscape Navigator through a firewall
+to ftp servers outside your site, then try configuring the firewall to
+allow outgoing connections on high-numbered ports.
+<P>Usually, ftp'ing involves opening a connection to an ftp server and then
+accepting a connection from the ftp server back to your computer on a
+randomly-chosen high-numbered telnet port. the connection from your
+computer is called the "control" connection, and the one from the ftp
+server is known as the "data" connection. All commands you send and the
+ftp server's responses to those commands will go over the control
+connection, but any data sent back (such as "ls" directory lists or
+actual file data in either direction) will go over the data connection.
+<P>However, this approach usually doesn't work through a firewall, which
+typically doesn't let any connections come in at all; In this case you
+might see your ftp connection appear to work, but then as soon as you do
+an "ls" or a "dir" or a "get", the connection will appear to hang.
+<P>Netscape Navigator uses a different method, known as "PASV" ("passive
+ftp"), to retrieve files from an ftp site. This means it opens a control
+connection to the ftp server, tells the ftp server to expect a
+control connection to the ftp server, tells the ftp server to expect a
+second connection, then opens the data connection to the ftp server
+itself on a randomly-chosen high-numbered port. This works with most
+firewalls, unless your firewall retricts outgoing connections on
+high-numbered ports too, in which case you're out of luck (and you
+should tell your sysadmins about this).
+<P>"Passive FTP" is described as part of the ftp protocol specification in
+RFC 959 ("http://www.cis.ohio-state.edu/htbin/rfc/rfc959.html").
+</BLOCKQUOTE>
+<P>If you are setting up an LVS ftp farm, it is likely that users will retrieve
+files with a browser and you will need to setup the LVS to handle passive ftp. 
+You will either need 
+<A HREF="LVS-HOWTO-7.html#persistent_connection">persistence</A> (also
+see on the LVS website under documentation; persistence handling in LVS)
+or 
+<A HREF="LVS-HOWTO-8.html#fwmark_passive_ftp">fwmark persistent connection for ftp</A>.
+<P>For passive ftp, the ftpd sets up a listener
+on a high port for the data transfer.
+This problem for LVS is that the IP for the listener is the RIP and not
+the VIP.
+<P>Wenzhuo Zhang 1 May 2001
+<BLOCKQUOTE>
+I've been using 2.2.19 on my dialup masquerading box for quite some
+time. It doesn't seem to me that the option is required, whether in
+PASV or PORT mode.
+<P>We can actually get ftp to work in NAT mode without using the
+ip_masq_ftp module. The trick is to tell the real ftp servers to use
+the VIP as the passive address for connections from outside; e.g. in
+wu-ftpd, add the following lines to the /etc/ftpaccess:
+<P>
+<PRE>
+passive address RIP &lt;localnet>
+passive address 127.0.0.1 127.0.0.0/8
+passive address VIP 0.0.0.0/0
+</PRE>
+<P>Of course, the ftp virtual service has to be persistent port 0.
+</BLOCKQUOTE>
+<P>On Thu, 3 May 2001, Alois Treindl wrote:
+<P>
+<BLOCKQUOTE>
+I found (with kernel 2.2.19) that I needed the command
+<P>
+<PRE>
+modprobe ip_masq_ftp in_ports=21
+</PRE>
+ 
+so that (passive mode) ftp from Netscape would work.
+<P>Julian Anastasov <CODE>ja@ssi.bg</CODE> 03 May 2001
+<P>
+<BLOCKQUOTE>
+Yes, it seems this option is not useful for the active FTP
+transfers because if the data connection is not created while the
+client's PORT command is detected in the command stream then it is
+created later when the internal real server creates normal in->out
+connection to the client. So, it is not a fatal problem for active
+FTP to avoid this option. The only problem is that these two connections
+are independent and the command connection can die before the data
+connection, for long transfers. With the in_ports option used this
+can not happen.
+<P>The fatal problems come for the passive transfers
+when the data connection from the client must hit the LVS service.
+For this, the ip_masq_ftp module must detect the 227 response from
+the real server in the in->out packets and to open a hole for the
+client's data connection. And the "good" news is that this works only
+with in_ports/in_mark options used.
+</BLOCKQUOTE>
+<P>without the in_ports=21 it did not work.
+<P>I am using proftpd as ftp server, which does not seem to have
+on option so that I could configure on the server that it
+gives the VIP to clients making a PASV request; it always gives
+the realserver IP address in replies to such requests.
+<P>
+<BLOCKQUOTE>
+Bad ftpd :) It seems the follwing rules are valid:
+<P>     
+- active ftp always works through stupid balancers (for external clients)
+that have minimum support for masquerading, with some drops in the
+command connection
+<P>- passive ftp always works through stupid masq boxes (for internal clients)
+<P>The passive ftp setup is useful because the data connection can 
+be mairked as a slave to the command connection and in this way 
+avoid connection reconnects.
+</BLOCKQUOTE>
+</BLOCKQUOTE>
+<P>
+<H2><A NAME="ss10.6">10.6 ftp is difficult to secure</A>
+</H2>
+
+<P>
+<P>Roberto Nibali <CODE>ratz@tac.ch</CODE> 06 May 2001
+<P>We have multiple
+choices if we want to narrow down the input ipchains rules on the front 
+interface of director
+<P>
+<UL>
+<LI>Use ftp via LVS. (this is not a solution actually, we still need special
+input rules on the EXT_IF for 1024:65535)</LI>
+<LI>Use ftp without LVS but with SNAT. (difficult to setup)</LI>
+<LI>Use SuSE ftp proxy suite.</LI>
+<LI>Use 2.4 kernel and ip_conntrack_ftp (don't know much about this, ask Rusty)</LI>
+<LI>Don't use ftp at all (this is what we want)</LI>
+</UL>
+<P>The biggest problem is with the ip_masq_ftp module.
+It should create an ip_fw entry in the masq_table for the PORT port. 
+It doesn't do this and we have to open the whole port range. 
+For PASV we have to DNAT the range. 
+<PRE>
+ipchains -A forward -i $EXT_IF -s $INTERNAL_NET $UNPRIV_PORTS -d $DEP -j MASQ
+</PRE>
+<P>FTP is made up of two connections, the Control- and the Data- Connection.
+<P>
+<UL>
+<LI>ftp Control Connection
+<P>
+<P>The Client contacts the Servers port 21 from an
+UNPRIV Port. No trouble, standard, plain, vanilla
+TCP-Connection, we all love it. Over this connection the client
+sends commands to the server. We will see examples later.
+<P>
+</LI>
+<LI>FTP Data Connection
+<P>"Data" can be either the content of a file (sent as e.g. the result of
+a "get" or "put" command) or the content of a directory-listing (i.e.
+the result of a "ls" or "dir" command).
+<P>The data connection is where the trouble starts. To transfert
+data, a second connection is opened.
+<P>Usually the client opens this second connection to the server. 
+But for active ftp, the server opens this second connection, 
+using the well-known port 20 (called ftp-data) as sourceport. 
+But which port on the client should he connect to? 
+The client announces the port via a "port"-command over the control connection. 
+This is nasty: Ports are negotiated on application-level where
+L4 switches like LVS can see what's going on.
+<P>For passive ftp, the server announces the port the client should connect to
+in its reply to the client's "pasv"-command (this command starts passive FTP, 
+active is the default). 
+The client then opens the data-connection to the server. 
+The port that the server listens on is an unprivileged port (rather
+than a privileged port as is normal for internet services).
+A passive ftp transfer then requires that connections be allowed between all
+63000 unprivileged ports on both the client and real-servers rather than just one. 
+A passive ftp server is difficult to secure with packet filter rules.
+</LI>
+</UL>
+<P>If we have to protect a client, we would like to only allow passive ftp, 
+because then we do not have to allow incoming connections. 
+If we have to protect a server, we would like to only allow active ftp, 
+because then we only have to allow the incoming control-connection. 
+This is a deadlock.
+<P>
+<A NAME="netcat"></A> 
+Example ftp sessions with 
+<A HREF="http://l0pht.com/~weld/netcat/nc110.tgz">netcat</A>.
+<P>We need 2 xterms (x1, x2), netcat and an ftp-server (here &quot;zar&quot; 172.23.2.30).
+<P>First passive mode (because it is conceptionally easier) 
+<P>
+<PRE>
+#x1: Open the control-connection to the server, 
+#and sent the command "pasv" to the server. 
+$ netcat zar 21
+220 zar.terreactive.ch FTP server (Version 6.4/OpenBSD/Linux-ftpd-0.16) ready.
+user ftp
+331 Guest login ok, send your complete e-mail address as password.
+pass ftp
+230 Guest login ok, access restrictions apply.
+pasv
+227 Entering Passive Mode (172,23,2,30,169,29)
+</PRE>
+<P>The server replied with 6 numbers: 
+<UL>
+<LI> 172,23,2,30 is the IP I have to connect to</LI>
+<LI> (169*256+29=43293) is the Port</LI>
+</UL>
+<P>In x2 I open a second connection with a second netcat
+<P>
+<PRE>
+$ netcat 172.23.2.30 43293
+# x2 will now display output from this connection
+</PRE>
+<P>Now in x1 (the control-connection) 
+<PRE>
+$ list
+list
+150 Opening ASCII mode data connection for '/bin/ls'.
+226 Transfer complete.
+</PRE>
+<P>and in x2 the listing appears.
+<P>Active ftp 
+<P>I use the same control-connection in x1 as above, 
+but I want the server to open a connection. 
+Therefore I first need a listener. 
+I do it with netcat in x2:
+<P>
+<PRE>
+$ netcat -l -p 2560
+</PRE>
+<P>Now I tell the server on the control connection to connect (2560=10*256+0)
+<PRE>
+port 172,23,2,8,10,0
+200 PORT command successful.
+
+&lt;verb>
+
+Now you see, why I used port 2560. 
+172.23.2.8 is, of course, my own IP-address. 
+And now, using x1, I ask for a directory-listing 
+with the list command, and it appears in x2. 
+For completeness sake, here is the the full in/output. 
+
+First the xterm 1:
+
+&lt;verb>
+netcat zar 21
+220 zar.terreactive.ch FTP server (Version 6.4/OpenBSD/Linux-ftpd-0.16) ready.
+user ftp
+331 Guest login ok, send your complete e-mail address as password.
+pass ftp
+230 Guest login ok, access restrictions apply.
+pasv
+227 Entering Passive Mode (172,23,2,30,169,29)
+list
+150 Opening ASCII mode data connection for '/bin/ls'.
+226 Transfer complete.
+port 172,23,2,8,10,0
+200 PORT command successful.
+list
+150 Opening ASCII mode data connection for '/bin/ls'.
+226 Transfer complete.
+quit
+221 Goodbye.
+</PRE>
+<P>xterm 2:
+<PRE>
+netcat 172.23.2.30 43293
+total 7
+dr-x--x--x   2 root     root         1024 Jul 26  2000 bin
+drwxr-xr-x   2 root     root         1024 Jul 26  2000 dev
+dr-x--x--x   2 root     root         1024 Aug 20  2000 etc
+drwxr-xr-x   2 root     root         1024 Jul 26  2000 lib
+drwxr-xr-x   2 root     root         1024 Jul 26  2000 msgs
+dr-xr-xr-x  11 root     root         1024 Mar 15 14:26 pub
+drwxr-xr-x   3 root     root         1024 Mar 11  2000 usr
+</PRE>
+<P>
+<PRE>
+netcat -l -p 2560
+total 7
+dr-x--x--x   2 root     root         1024 Jul 26  2000 bin
+drwxr-xr-x   2 root     root         1024 Jul 26  2000 dev
+dr-x--x--x   2 root     root         1024 Aug 20  2000 etc
+drwxr-xr-x   2 root     root         1024 Jul 26  2000 lib
+drwxr-xr-x   2 root     root         1024 Jul 26  2000 msgs
+dr-xr-xr-x  11 root     root         1024 Mar 15 14:26 pub
+drwxr-xr-x   3 root     root         1024 Mar 11  2000 usr
+</PRE>
+<P>
+<H2><A NAME="ss10.7">10.7 evaluation of SuSE ftp proxy</A>
+</H2>
+
+<P>
+<P>Roberto Nibali <CODE>ratz@tac.ch</CODE> 08 May 2001
+<P>There has been some talks about ftp, security and LVS recently and different
+opinions appeared. I wasn't aware of the fact the people still heavily use 
+the ftp protocol through a firewall, rather then putting a completely secluded
+box in a corner. Back here at terreActive we have been fighting with the ftp
+problem since 4 years already and we have not yet the ultimate solution. As
+such we also evaluated 
+<A HREF="http://www.suse.de/en/support/proxy_suite/">the SuSE FTP proxy</A><P>What follows is an evaluation mostly done by one of our coworkers Martin 
+Trampler and me (ratz). We're not yet finished with testing everything and
+all possible setups (NAT, non-NAT, client behind a firewall, etc.) but the
+result looks rather good in terms of improving security. A better paper will
+probably follow, but we're too busy right now and ftp is anyway not allowed
+in our company policy unless the customer has a special SLA.
+<P>
+<H3>Motivated by</H3>
+
+<P>
+<UL>
+<LI>the general problems related to allowing FTP-traffic through a non-stateful packetfilter</LI>
+<LI>the special problems we encountered with the Firewall-1 software
+on one of our packetfilter which in the end forced us to deinstall FW1</LI>
+<LI>the broken Linux FTP-masquerading module</LI>
+</UL>
+<P>I started in March/01 with a search for a FTP Proxy-software, which
+could be used as a drop-in on pab1/2-machines to increase the security
+of the machines (clients and servers) behind the packetfilters. Since
+it was a requirement that this Software should be able to
+transparently proxy external clients (i.e. the clients don't realize
+that there is a proxy inbetween), there was only one package which
+deserved a closer look: The FTP-Proxy from the SuSE Proxy Suite (which
+actually consists of nothing but this FTP-Proxy). This Proxy now
+includes support for transparent proxying mode.
+<P>
+<H3>Mode of operation</H3>
+
+<P>
+<P>The Proxy consists of a single binary (ftp-proxy, stripped about 50k).
+All configuration-options can be set in a single configuration-file
+which by default is named ftp-proxy.conf and searched for in whatever
+directory was given with the configure-option --sysconfdir=. If this
+option was not given it is searched for in
+/usr/local/proxy-suite/etc/, which shows SuSEs BSD-heritage.
+Best way is, to give the config-file at runtime with the -f
+cmdline-option.
+<P>It is very useful to compile debugging-support into the binary during
+evaluation and to run it with the cmdline-option -v 4 for maximum
+debugging. Debugging output is then appended to /tmp/ftp-proxy.debug.
+It can be run from (x)inetd or in standalone-mode as daemon. I only
+evaluated the daemon.
+<P>It reads the config-file (which must exist) and binds to some local
+port (e.g. 3129, which is IANA-unassigned and squid+1). The
+Packetfilter has to be configured to redirect all packets which come
+in on port 21 to this port (more later). As soon as it gets a request
+it handles it by first replying to the client only. After the initial
+USER &lt;username&gt; command it connects to the server (or, more exactly,
+to port 21 of the host whose IP was the destination of the redirected
+package).
+<P>The configfile may contain user-specific sections which direct special
+users to special servers. This feature may be very useful but was not
+evaluated either. It then continues as an agent between client and
+server; checking either side's communication for correct syntax, as a
+good application-proxy should.
+<P>As soon as the client prepares a data connection (either by sending a
+PASV or a PORT command, it acknowledges it and, in case of a requested
+passive connection, establishes a listener which binds to the server's
+IP (!!). This came rather as a surprise to me. It actually works and
+means, that the data connection is transparent as well for the client.
+The range of port on which it listens is configureable as well as the
+range of ports it uses for outgoing connection (to either the server
+or to the client in the active-ftp case).
+<P>As soon as the client actually wants to retrieve data, the connection
+to the server is established and the data is shuffeled around. Since
+the connection to the server is completely seperate from the client
+connection, its mode doesn't have to be the one the client requests
+(also by default it is). The data-connection to the server may also be
+configured to always be active or passive. Here it is clearly
+desireable to always use passive mode to avoid opening another
+listener on the packetfilter.
+<P>
+<H3>Evaluation</H3>
+
+<P>
+<P>After initially having some minor problems to compile the proxy (it
+has to be configured --with-regex) and to get it running (by default
+it thinks it is started by inetd, i.e. standalone-mode is not the
+default) it ran without problems and also wrote informative messages
+into the debugging file. Almost everything can be configured in the
+configuration file (also not everything is documented unambigously)
+but in general the quality of the documentation, the logging and the
+debugging messages seems quite high.
+<P>The proxy is, as already mentioned, completely transparent for the
+client and of course intransparent for the server (i.e. the server
+sees the connections coming from the client).
+<P>First more extensive stress-testing and code-review performed on
+04/Apr/01 showed the following irregularities:
+<P>
+<UL>
+<LI>Using active ftp, the data-connection on the server-side often
+failed. This problem could be circumvented by forcing the Proxy to
+always use passive mode on the server side (which should be used
+anyways, see below)</LI>
+<LI>The control-connection on the server side often could not be
+established.</LI>
+<LI>When running with debugging-output enabled, we found strange
+characters in the debugging as well as in the logging-output.</LI>
+</UL>
+<P>The failed connections result from portnumbers being reused where they
+should be increased. I think, this problem would also be found on the
+client-side of the connection if the stress-test would issue more than
+1 data-retrieving command. It may help to undefine the
+Destination[Min|Max]Port configuration directive to get a port
+assigned by the system.
+<P>The - attack-behaviour vanished after disabling debugging
+output but may nevertheless being an issue. We found a questionable
+use of a static char* in a formatting routine.
+<P>
+<H3>Integration into a firewall suite</H3>
+
+<H3>Packetfilter-ruleset</H3>
+
+<P>
+<P>First the Packetfilterport on which the proxy listens must be closed.
+It is well possible to bind the proxy to e.g. localhost, but the
+ipchains ... -j REDIRECT (see below) only allows the specification of
+a port, not of port+IP. If the proxy is bound to an IP it doesn't get
+the packets. It has to be universally bound and therefore its port
+must be closed.
+<P>In the following I use:
+<UL>
+<LI>PASV_PORTS: Configuration-directives "PassiveMin|Max]DataPort"; Ports
+on which Listeners for passive connections (to Clients) may be
+installed
+<LI>   SC&thinsp;PORTS: Configuration-directives "Destination[Min|Max]Port"; Ports
+which are used for connecting to the server (control-conn., data-conn.
+if server in passive mode) or on which the proxy listens for the
+server's data (if server in active mode, not documented). 
+<P>
+<P>For client-connections it is necessary that:
+<UL>
+<LI>In the input-chain (for the IF on which client packets arrive)
+there must be a redirect for packets from the client to the
+server, port 21 to the port on which the proxy listens.
+        </LI>
+<LI>In the input-Chain (for the IF on which client packets arrive)
+connections from the client to the server on port (UNPRIV->21) and
+(UNPRIV->PASV_PORTS) are accepted (as well as the reply-packets in
+the output-chain). The redirect-rule already acts as accepting
+rule for the incoming packets for port 21.
+Furthermore in the output-chain connections from the proxy (but
+with IP-adress of the server!), port 20, to the client (UNPRIV)
+must be allowed (as well as the corresponging reply-packets in the
+input-chain).</LI>
+</UL>
+<P>
+<P>For server-connections it is necessary that:
+<UL>
+<LI>In the output-chain of the server-side IF connections from the
+proxy (SC_PORTS) to port 21 of the server are allowed (and the
+reply packets in the input-chain)</LI>
+<LI>In the output-chain of the server-side IF connections from the
+proxy (SC_PORTS) to the server (UNPRIV) are allowed (and the reply
+packets in the input-chain)</LI>
+</UL>
+<P>
+</LI>
+</LI>
+</UL>
+       
+<P>The latter pair of rules covers the case that all data connections
+from the proxy to the server are passive.
+Note, that no rules for the forward-chain are necessary at all.
+<P>This diagram shows the
+control-connection.
+<P>
+<PRE>
+
+                        +--------------------------+
+                        |      |     Proxy      |  |
+                        |      |3129____________|  |
+  +--------+   tcp/21   |-----   ^         |  -----|  tcp/21   +--------+
+  | Client |----------->|eth0|   |         +->|eth1|---------->| Server |
+  +--------+ to server  |--------+redirect    -----|           +--------+
+                        |Packetfilter              |
+                        +--------------------------+
+</PRE>
+<P>The obvious problem is, to formulate a fw-ftp-proxy script which
+accepts 2 NEs (external client, internal server) as input and does not
+generate redundant rules. Because the server-side connection is
+completely independent from the client, its rules must only be added
+once for each server while the client-side rules (including the
+redirect) are dependent of both server and client. Probably the best
+way would be to add a script which only handles the client-side and to
+add each ftp-server seperately with a "tcp@fw"-rule. Since tcp@fw does
+not allow specification of source-ports, this rule would then be wider
+as necessary.
+<P>In the client-side script, the portrange used in the proxy-configfile
+would then have to be hardwired. It would be necessary to verify, that
+for every server used as target in a client-side script there is at
+least (or even better exactly one) tcp@fw as described above.
+<P>
+<H3>Security considerations</H3>
+
+<P>
+<P>We had a swift look at the code and it looks rather clean and well
+documented to me. Unfortunately some features are incorrectly
+documented or not documented at all while some features are already
+documented but not yet implemented.
+<P>As already mentioned, the port on which the proxy listens has to be
+closed. The servers should only be driven in passive mode, which
+should be possible for any server. The PASV_PORTS should be restricted
+to a dozen or so (depending on the load).
+<P>For the maintainers of the servers, the major drawback is the proxy's
+intransparency.
+<P>
+<H3>Features not yet evaluated</H3>
+
+<P>
+<P>
+<UL>
+<LI>User-specific configurations</LI>
+<LI>Use with LDAP and the TCP-Wrapper library (configure-options
+--with-ldap and --with-libwrap</LI>
+<LI>Limiting the set of allowed commands</LI>
+<LI>Proc-Filesystem Interface (module)</LI>
+<LI>chroot of forked processes</LI>
+</UL>
+<P>
+<H3>Conclusion</H3>
+
+<P>
+<P>
+<H3>General Aspects</H3>
+
+<P>
+<P>Given the current situation, where we shoot huge holes in the firewall
+to fully enable (passive) ftp connections to servers located inside,
+the use of this proxy would greatly increase the security of these
+systems.
+<P>Prior to deployment I think the code should be reviewed more closely
+(remember that the proxy opens listeners on the PF!) and some more
+efforts should be undertaken to find a configuration which is as tight
+as possible by providing the required functionality (cf. the section
+above).
+<P>
+<H3>Extensions</H3>
+
+<P>
+<P>It should, in general, be possible to have a second proxy running for
+inside clients. There we still have the problem, that we have to open
+the whole UNPRIV-Range for connections coming from sourceport 20.
+Basically I think, that this problem should be handled differently:
+Providing the functionality is the business of the server (hence the
+name) . The FTP-Protocol provides passive mode exactly for this case
+(firewalled client). So we should in general not allow clients behind
+our Firewalls/Packetfilters to make active FTP connections.
+<P>We found out that it should not be too difficult to enable
+"bidirectional transparency".
+<P>
+<H2><A NAME="ss10.8">10.8 telnet</A>
+</H2>
+
+<P>
+<P>Simple one port service.
+Use this (or 
+<A HREF="#netcat">netcat</A>) for initial testing of your LVS.
+It is a simpler client/service than http (is not persistent)
+and a connection shows up as an ActConn in the ipvsadm output.
+<P>
+<H2><A NAME="ss10.9">10.9 ssh</A>
+</H2>
+
+<P>
+<P>surprisingly (considering that it negotiates
+a secure connection) nothing special either.
+You do not need persistent port/client
+connection for this.
+<P>some stuff from Wensong about ssh (also see above for persistance)
+<P><CODE>jeremy@xxedgexx.com</CODE> wrote:
+<PRE>
+ > I'm using ipvs
+ > to balance ssh connections but for some reason ipvs is only using one real
+ > server and persists to use that server until I delete its arp entry from
+ > the ipvs machine and remove the virtual loopback on the real server.
+ > Also, I noticed that connections do not register which this behavior.
+</PRE>
+ 
+<P>(Wensong)
+do you use the persistent port for your VIP:22? If so, the
+default timeout of persistent port is 360 seconds, once the ssh
+session finishes, it takes 360 seconds to expire the persistent
+session. (In ipvs-0.9.1, you can flexibly set the timeout for the
+persistent port.) There is no need to use persistent
+port for ssh service, because the RSA keys are exchanged in each
+ssh session, and each session is not related.
+<P>
+<H2><A NAME="ss10.10">10.10 dns</A>
+</H2>
+
+<P>
+<P>This is from Ted Pavlic. Two (independant) connections, 
+tcp and udp to port 53 are needed.
+<P>(from the IPCHAINS-HOWO)
+DNS doesn't always use UDP; if the reply from the server exceeds 512
+bytes, the client uses a TCP connection to port number 53, to get 
+the data. Usually this is for a zone transfer.
+<P>
+<P>Here is part of an lvs.conf file which has dns on two real-servers.
+<PRE>
+        #dns, note: need both udp and tcp
+        #A real-server must be able to determine its own name.
+        #(log onto machine from console and use nslookup
+        # to see if it knows who it is)
+        # and to do DNS on the VIP and name associated with the VIP
+        #To test a running LVS, on client machine, run nslookup and set server = VIP.
+        SERVICE=t dns wlc 192.168.1.1 192.168.1.8
+        SERVICE=u dns wlc 192.168.1.1 192.168.1.8
+</PRE>
+<P>If the LVS is run without mon, then any setup that allows the
+real-servers to resolve names is fine (ie if you can sit at the
+console of each real-server and run nslookup, you're OK).
+<P>If the LVS is run with mon (eg for production), then dns
+needs to be setup in a way that dns.monitor can tell if the
+LVS'ed form of dns is working. When dns.monitor tests a
+real-server for valid dns service, it first asks for the zone
+serial number from the authoritative (SOA) nameserver of the
+virtualserver's domain. This is compared with the serialnumber
+for the zone returned from the real-server. If these match then
+dns.monitor declares that the real-server's dns is working.
+<P>The simplest way of setting up an LVS dns server is for the
+real-servers to be secondaries (writing their secondary zone info
+to local files, so that you can look at the date and contents of
+the files) and some other machine (eg the director) to be the
+authoritative nameserver. Any changes to the authoritative 
+nameserver (say the director) will have to be propagated to the 
+secondaries (here the real-servers) (delete the secondary's zone files 
+and HUP named on the real-servers). After the HUP, new files will be 
+created on the secondary nameservers (the real-servers) with the time of 
+the HUP and with the new serial numbers. If the files on the 
+secondary nameservers are not deleted before the HUP, then they 
+will not be updated till the refresh/expire time in the zonefile 
+and the secondary nameservers will appear to dns.monitor to not 
+be working.
+<P>There is no reason to create an LVS to do DNS. DNS has its own
+cacheing and hierachial method of loadbalancing. However if you
+have an LVS  already running serving http, ftp...  then it's
+simple to throw in dns as well (Ted).
+<P>
+<H2><A NAME="ss10.11">10.11 sendmail/smtp/pop3/qmail</A>
+</H2>
+
+<P>
+<P>For mail which is being passed through, LVS is a good solution.
+<P>If the mail is being delivered to the real-server, 
+then the mail will arrive randomly at any one of
+the real-servers and write to the different filesystems. 
+Since you probably want your mail to arrive at one place only,
+the only way of handling this right now is to have the
+/home directory nfs mounted on all the real-servers from a
+backend fileserver which is not part of the LVS. (an nfs.monitor is in
+the works.) Each real-server will have to be configured to accept
+mail for the virtual server DNS name (say lvs.domain.com). 
+<P>It should be possible to use Coda (http://www.coda.cs.cmu.edu/) to 
+keep /home directories synchronised, or inter-mezzo or gfs all 
+of which look nice, but we haven't tested.
+<P>To maintain user passwds on the real-servers -
+<P>(Gabriel Neagoe <CODE>Gabriel.Neagoe@snt.ro</CODE>) for syncing the passwords
+- IF THE ENVIRONMENT IS SAFE- you could use NIS or rdist
+<P>
+<H3>identd (auth) problems</H3>
+
+<P>
+<P>You will not be explicitely configuring identd in an LVS. 
+However 
+<A HREF="LVS-HOWTO-16.html#authd">identd</A> is used by sendmail 
+and tcpwrappers and will cause problems.
+Sendmail can't use identd when running on an LVS 
+(see 
+<A HREF="LVS-HOWTO-16.html#identd_and_sendmail">identd and sendmail</A>).
+Running identd as an LVS service doesn't fix this.
+<P>
+<PRE>
+for sendmail:
+in sendmail.cf file set the value
+Timeout.ident=0
+</PRE>
+<P>(see http://www.sendmail.org/faq/section3.html - Why do 
+connections to the smtp port take such a long time?) 
+<P>for 
+<A HREF="http://www.qmail.org">qmail</A>:
+<P>From: Martin Lichtin <CODE>lichtin@bivio.com</CODE>
+<P>If invoked with tcp-env in inetd.conf -
+use the -R option
+<P>if spawned using svc and DJ's daemontools packages -
+<P>
+<PRE>
+ 
+ > /usr/local/bin/tcpserver -u 1002 -g 1001 -c 500 -v 0 smtp /var/qmail/bin/qmail-smtpd
+</PRE>
+<P>tcpserver is the recommended method of running qmail, 
+where you use the -R option for tcpserver 
+<P>-R: Do not attempt to obtain $TCPREMOTEINFO from the remote host. 
+To avoid loops, you must use this option for servers on TCP ports 53 and 113.
+<P>To test an LVS'ed smtp server (connect to lvs:smtp from the client)
+<PRE>
+client:~# telnet lvs.cluster.org
+ trying 192.168.1.110...
+ Connected to lvs.cluster.org
+ Escape character is '^]'.
+220 lvs.cluster.org ESMTP Sendmail 8.9.1a/8.9.0; Sat 6 Nov 1999 13:16:30 GMT
+ HELO client.cluster.org
+250 client.cluster.org Hello root@client.cluster.org [192.168.1.12], pleased to meet you
+ quit
+221 client.cluster.org closing connection
+</PRE>
+<P>check that you can access each real-server in turn (here 192.168.1.12 was accessed).
+<P>pop3 - as for smtp. The mail agents must see the same
+/home file system, so /home should be mounted on
+all real-servers from a single file server. 
+<P>
+<H3>Thoughts about sendmail/pop</H3>
+
+<P> 
+<P>(another variation on the many
+reader/many writer problem)
+<P>From: Rob Thomas <CODE>rob@rpi.net.au</CODE>
+<P><CODE>loc@indochinanet.com</CODE> wrote:
+<P>
+<PRE>
+> I need this to convince my boss that LVS  is THE SOLUTION for very
+> Scalable and High Available Mail/POP server. 
+</PRE>
+<P>This is about the hardest clustering thing you'll ever do.
+Because of the constant read/write access's you -will- have
+problems with locking, and file corruption.. The 'best' way to do
+this is (IMHO):
+<P>
+<OL>
+<LI>NetCache Filer as the NFS disk server.</LI>
+<LI>Several SMTP clients using NFS v3 to the NFS server.</LI>
+<LI>Several POP/IMAP clients using NFS v3 to the NFS server.</LI>
+<LI>At least one dedicated machine for sending mail out (smarthost)</LI>
+<LI> LinuxDirector box in front of 2 and 3 firing requests off</LI>
+</OL>
+<P>Now, items 1 2 -and- 3 can be replaced by Linux boxes, but, NFS
+v3 is still in Alpha on linux.  I -believe- that NetBSD (FreeBSD?
+One of them) has a fully functional NFS v3 implementation, so you
+can use that.
+<P>The reason why I emphasize NFSv3 is that it -finally- has 'real'
+locking support.  You -must- have atomic locks to the file
+server, otherwise you -will- get corruption. And it's not
+something that'll happen occasionally.  Picture this:
+<P>
+<PRE>
+
+  [client]  --  [ l.d ] -- [external host]
+                   |
+     [smtp server]-+-[pop3 server]
+                   |
+               [filesrv]
+</PRE>
+<P>Whilst [client] is reading mail (via [pop3 server]), [external
+host] sends an email to his mailbox.  the pop3 client has a file
+handle on the mail spool, and suddenly data is appended to this.
+Now the problem is, the pop3 client has a copy of (what it
+thinks) is the mail spool in memory, and when the user deletes a
+file, the mail that's just been received will be deleted, because
+the pop3 client doesn't know about it.
+<P>This is actually rather a simplification, as just about every
+pop3 client understands this, and will let go of the file
+handle.. But, the same thing will happen if a message comes in
+-whilst the pop3d is deleting mail-.
+<P>
+<PRE>
+
+                           POP Client    SMTP Client
+  I want to lock this file &lt;--
+  I want to lock this file               &lt;--
+  You can lock the file    -->
+  You can lock the file                  -->
+  Consider it locked       &lt;--
+  File is locked           -->
+  Consider it locked                     &lt;--
+  Ooh, I can't lock it                   -->
+</PRE>
+<P>The issue with NFS v1 and v2 is that whilst it has locking support, it's
+not atomic. NFS v3 can do this:
+<P>
+<PRE>
+                           POP Client    SMTP Client
+  I want to lock this file &lt;--
+  I want to lock this file               &lt;--
+  File is locked           -->
+  Ooh, I can't lock it                   -->
+</PRE>
+<P>That's why you want NFSv3. Plus, it's faster, and it works over
+TCP, rather than UDP 8-)
+<P>From: Stefan Stefanov <CODE>sstefanov@orbitel.bg</CODE>
+<P>> This is about the hardest clustering thing you'll ever do.  Because of
+<P>I think this might be not-so-hardly achieved with CODA and Qmail.
+<P>Coda (http://www.coda.cs.cmu.edu) allows "clustering" of file
+system space. Qmail's (http://www.qmail.org) default mailbox
+format is Maildir, which is very lock safe format (even on NFS
+without lockd).
+<P>(I haven't implemented this, it's just a suggestion.)
+<P>
+<H3>mail farms</H3>
+
+<P>
+<P>Peter Mueller <CODE>pmueller@sidestep.com</CODE> 10 May 2001 
+<P>
+<BLOCKQUOTE>
+what open source mail programs have you guys used for SMTP mail farm with
+LVS?  I'm thinking about Qmail or Sendmail?
+<P>Michael Brown <CODE>Michael_E_Brown@Dell.com</CODE>, Joe
+and
+Greg Cope <CODE>gjjc@rubberplant.freeserve.co.uk</CODE> 10 May 2001
+<P>
+<BLOCKQUOTE>
+You can do load balancing against multiple mail servers without LVS. 
+Use multiple MX records to load balance,
+and mailing list management software (Mailman, maybe?). 
+DNS responds with all MX records for a request. 
+The MTA should then choose one at random from the same piority.
+(A cache DNS will also return all MX records.)
+You don't get persistent use of one MX record.
+If the chosen MX record points to a machine that's down,
+the MTA will choose another MX record.
+</BLOCKQUOTE>
+</BLOCKQUOTE>
+<P>Note this applies to mail which is being sent on by the MTA.
+The final target machine has the single-writer, many-reader problem
+as before.
+<P>
+<H2><A NAME="ss10.12">10.12 authd/identd (port 113) and tcpwrappers (tcpd)</A>
+</H2>
+
+<P>
+<P>You do not explicitely set authd (==identd) as an LVS service. 
+It is used with some services (eg sendmail, services running inside tcpwrappers). 
+authd initiates calls from the real-servers to the client.
+LVS is designed for services which receive connect requests from clients.
+LVS does not allow authd to work anymore and this must be taken into
+account when running services that cooperate with authd. The inability
+of authd to work with LVS is important enough that there is a
+separate 
+<A HREF="LVS-HOWTO-16.html#authd">section on authd</A>.
+<P>
+<H2><A NAME="ss10.13">10.13 http name and IP-based (with VS-DR or VS-Tun)</A>
+</H2>
+
+<P>
+<P>http with name- and ip-based http
+is a simple one port service. Your httpd must be listening to the VIP
+which will be on lo:0 or tunl0:0. The httpd can be listening on the
+RIP too (on eth0) for mon, but for the LVS you need the httpd listening
+to the VIP as well. 
+<P>Thanks to Doug Bagley <CODE>doug@deja.com</CODE> for getting this info on 
+ip and name based http into the HOWTO. 
+<P>Both ip-based and name-based webserving in an LVS
+are simple. 
+In ip-based (HTTP/1.0) webserving, the client sends a request to a hostname 
+which resolves to an IP (the VIP on the director). The director
+sends the request to the httpd on a real-server. The httpd
+looks up its httpd.conf to determine how to handle the request (e.g. 
+which DOCUMENTROOT). 
+<P>In named-based (HTTP/1.1) webserving, the client passes the HOST: header 
+to the httpd. The httpd looks up the httpd.conf file and directs the
+request to the appropriate DOCUMENTROOT. In this case all URL's on
+the webserver can have the same IP. 
+<P>The difference between ip- and name-based web support is handled by 
+the httpd running on the real-servers.  LVS operates at the IP level 
+and has no knowledge of ip- or name-based httpd and has no need to 
+know how the URLs are being handled.
+<P>For the definitive word on ip-based and name-based web support see
+<P>http://www.apache.org/docs/vhosts/index.html
+<P>Here are some excerpts.
+<P>The original (HTTP/1.0) form of http was IP-based, ie the httpd
+accepted a call to an IP:port pair, eg 192.168.1.110:80. In the
+single server case, the machine name (www.foo.com) resolves to
+this IP and the httpd listens to calls to this IP. Here's the
+lines from httpd.conf
+<P>
+<BLOCKQUOTE><CODE>
+<PRE>
+Listen 192.168.1.110:80
+&lt;VirtualHost 192.168.1.110>
+        ServerName lvs.mack.net
+        DocumentRoot /usr/local/etc/httpd/htdocs
+        ServerAdmin root@chuck.mack.net
+        ErrorLog logs/error_log
+        TransferLog logs/access_log
+&lt;/VirtualHost>
+</PRE>
+</CODE></BLOCKQUOTE>
+<P>To make an LVS with IP-based httpds, this IP is used as
+the VIP for the LVS and if you are using VS-DR/VS-Tun,
+then you set up multiple real-servers, each with the httpd
+listening to the VIP (ie its own VIP). If you are running an LVS
+for 2 urls (www.foo.com, www.bar.com), then you have
+2 VIPs on the LVS and the httpd on each real-server
+listens to 2 IPs.
+<P>The problem with ip-based virtual hosts is that an IP
+is needed for each url and ISPs charge for IPs.
+<P>(Doug Bagley <CODE>doug@deja.com</CODE>)
+<P>With HTTP/1.1, a client
+Name based virtual hosting uses the HTTP/1.1 "Host:" header,
+which HTTP/1.1 clients send.  This allows the server to know what
+host/domain, the client thinks it is connecting to.  A normal
+HTTP request line only has the request path in it, no hostname,
+hence the new header.  IP-based virtual hosting works for older
+browsers that use HTTP/1.0 and don't send the "Host:" header, and
+requires the server to use a separate IP for each virtual domain.
+<P>The httpd.conf file then has
+<BLOCKQUOTE><CODE>
+<PRE>
+NameVirtualHost 192.168.1.110
+
+&lt;VirtualHost 192.168.1.110>
+ServerName www.foo.com
+DocumentRoot /www.foo.com/
+..
+&lt;/VirtualHost 192.168.1.110>
+
+&lt;VirtualHost 192.168.1.110>
+ServerName www.bar.com
+DocumentRoot /www.bar.com/
+..
+&lt;/VirtualHost 192.168.1.110>
+</PRE>
+</CODE></BLOCKQUOTE>
+<P>DNS for both hostnames resolves to 192.168.1.110 and the httpd
+determines the hostname to accept the connection from the
+"Host:" header. Old (HTTP/1.0) browsers will be served the
+webpages from the first VirtualHost in the httpd.conf.
+<P>For LVS again nothing special has to be done. All the hostnames
+resolve to the VIP and on the real-servers, VirtualHost directives
+are setup as if the machine was a standalone.
+<P>From Ted Pavlic <CODE>pavlic@netwalk.com</CODE>. Note that in 2000,
+<A HREF="http:/www.arin.net/announcements/">ARIN</A>
+(look for &quot;name based web hosting&quot; 
+announcements, the link changes occasionally)
+announced that IP based webserving would be phased out
+in favor of name based webserving for ISPs who have more that 
+256 hosts. This will only require one IP for
+each webserver. (There are exceptions, ftp, ssl, frontpage...)
+<P>
+<H2><A NAME="ss10.14">10.14 http with VS-NAT</A>
+</H2>
+
+<P>
+<P>Summary: make sure the httpd on the real-server is listening on the RIP
+not the VIP (this is the opposite of what was needed for VS-DR or VS-Tun).
+(Remember, there is no VIP on the real-server with VS-NAT).
+<P>tc lewis had an (ip-based) non-working http VS-NAT setup. The VIP
+was a routable IP, while the real-servers were virtual hosts on the
+non-routable 192.168.1.0/24 network.
+<P>>From: Michael Sparks <CODE>michael.sparks@mcc.ac.uk</CODE>
+<P>What's happening is a consequence of using NAT. Your LVS is accepting
+packets for the VIP, and re-writing them to either 192.168.123.3 or
+192.168.123.2. The packets therefore arrive at those two servers marked
+for address 192.168.123.2 or 192.168.123.3, not the VIP.
+<P>As a result when apache sees this:
+<BLOCKQUOTE><CODE>
+<PRE>
+&lt;VirtualHost w1.bungalow.intra>
+...
+&lt;/VirtualHost>
+</PRE>
+</CODE></BLOCKQUOTE>
+<P>It notices that the packets are arriving on either 192.168.123.2 or
+192.168.123.3 and not w1.bungalow.intra, hence your problem.
+<P>Solutions
+<UL>
+<LI>If this is the only website being serviced by these two servers, change
+the config so the default doc root is the one you want.
+</LI>
+<LI>If they're servicing many websites, map a realworld IP to an aliases on the
+real-servers and use that to do the work. IMO this is messy, and could
+cause you major headaches.
+</LI>
+<LI>Use VS-DR or VS-Tun - that way the above config could be used without
+problems since the VS address is a local address as well. This'd be my
+choice.</LI>
+</UL>
+<P>
+<P>Joe 10 May 2001 
+<P>It just occured to me that a real-server in a VS-NAT LVS
+is listening on the RIP. The client is sending to the VIP.
+In an HTTP 1.1 or name based httpd, doesn't the server
+get a request with the URL (which will have the VIP) 
+in the payload of the packet (where an L4 switch doesn't see it)?
+Won't the server be unhappy about this? This has come up
+before with name based service like 
+<A HREF="#https">https</A> and for 
+<A HREF="#indexing">indexing of webpages</A>.
+Does anyone know how to force an HTTP 1.1 connection
+(or to check whether the connection was HTTP 1.0 or 1.1)
+so we can check this?
+<P>Paul Baker <CODE>pbaker@where2getit.com</CODE> 10 May 2001
+<BLOCKQUOTE>
+The HTTP 1.1 request (and also 1.0 requests from any modern browser) 
+contain a Host: header which specifies the hostname of the server. As 
+long as the webservers on the real-servers are aware that they are 
+serving this hostname. There should be no issue with 1.1 vs 1.0 http 
+requests.
+</BLOCKQUOTE>
+<P>so both virtualHost and servername should be the reverse dns of the VIP?
+<BLOCKQUOTE>
+Yes. Your Servername should be the reverse dns of the VIP and you need 
+to have a Virtualhost entry for it as well. In the event that you are 
+serving more than one domain on that VIP, then you need to have a 
+VirtualHost entry for each domain as well.
+</BLOCKQUOTE>
+<P>what if instead of the name of the VIP, I surf to the actual IP?
+There is no device with the VIP on the VS-NAT real-server. Does
+there need to be one? Will an entry in /etc/hosts that maps the VIP
+to the public name do?
+<P>Ilker Gokhan <CODE>IlkerG@sumerbank.com.tr</CODE>
+<BLOCKQUOTE>
+If you write URL with IP address such as http://123.123.123.123/,
+the Host: header is filled with this IP address, not hostname. 
+You can see it using any network monitor program (tcpdump).
+</BLOCKQUOTE>
+<P>
+<H2><A NAME="ss10.15">10.15 httpd normally closes connections</A>
+</H2>
+
+<P>
+<P>If you look with ipvsadm to see the activity on an LVS serving
+httpd, you won't see much. 
+A non-persistent httpd on the real-server closes the connection
+after sending the packets.
+<P>Here's the output from ipvsadm, immediately after retrieving
+a gif filled webpage from a 2 real-server LVS.
+<P>
+<PRE>
+director:# ipvsadm
+IP Virtual Server version 0.2.5 (size=4096)
+Prot LocalAddress:Port Scheduler Flags
+  -> RemoteAddress:Port          Forward Weight ActiveConn InActConn
+TCP  lvs2.mack.net:www rr
+  -> bashfull.mack.net:www       Masq    1      2          12        
+  -> sneezy.mack.net:www         Masq    1      1          11        
+</PRE>
+<P>The InActConn are showing the connections that transferred
+hits that have been closed and are in the FIN state waiting to timeout.
+You may see &quot;0&quot; in the InActConn column, leading
+you to think that you are not getting the packets via the LVS.
+<P>
+<H2><A NAME="ss10.16">10.16 Persistence with http; browser opens many connections to httpd</A>
+</H2>
+
+<P>
+<P>With the first version of the http protocol, HTTP/1.0, 
+a client would request a hit/page from the httpd.
+After the transfer, the connection was dropped. 
+It is expensive to setup a tcp connection just to transfer
+a small number of packets, when it is likely that the 
+client will be making several more requests immediately
+afterwards (<EM>e.g.</EM> if the client downloads a page with
+references to gif images in it, then after parsing the html
+page, it will issue requests to fetch the gifs). 
+With HTTP/1.1 persistent connection was possible.
+The client/server pair negotiate to see 
+if persistent connection is available. 
+The httpd will keep the connection open for a period (KeepAliveTimeout, 15sec usually)
+after a transfer in case further transfers are requested. 
+The client can drop the connection any time it wants to 
+(<EM>i.e.</EM> when it has got all the hits on a page).
+<P>Alois Treindl <CODE>alois@astro.ch</CODE> 30 Apr 2001
+<P>
+<BLOCKQUOTE>
+when I reload a page on the client, the browser makes several http 
+hits on the server for the graphics in the page.
+These hits are load balanced between the real servers.
+I presume this is normal for HTTP/1.0 protocol, though I would
+have expected Netscape 4.77 to use HTTP/1.1 with one connection for
+all parts of a page.
+</BLOCKQUOTE>
+ 
+<P>Joe
+<P>Here's the output of ipvsadm after downloading a test page consisting
+of 80 different gifs (80 lines of &lt;img src="foo.gif"&gt;.
+<P>
+<PRE>
+director:/etc/lvs# ipvsadm
+IP Virtual Server version 1.0.7 (size=4096)                    
+Prot LocalAddress:Port Scheduler Flags                         
+  -> RemoteAddress:Port             Forward Weight ActiveConn InActConn
+TCP  lvs.mack.net:http rr
+  -> bashfull.mack.net:http         Route   1      2          0         
+  -> sneezy.mack.net:http           Route   1      2          0         
+</PRE>
+<P>It would appear that the browser has made 4 connections which are left open.
+The client shows (netstat -an) 4 connections which are ESTABLISHED, while the real-servers
+show 2 connections each in FIN_WAIT2. Presumably each connection was used to transfer
+an average of 20 requests.
+<P>If the client-server pair were using persistent connection, I would expect
+only one connection to have been used.
+<P>
+<P>Andreas J. Koenig <CODE>andreas.koenig@anima.de</CODE> 02 May 2001
+<BLOCKQUOTE>
+Netscape just doesn't use a single connection, and not only Netscape.
+All major browsers fire mercilessly a whole lot of connections at the
+server. They just don't form a single line, they try to queue up on
+several ports simultaneously...
+<P>
+<P>...and that is why you should never set KeepAliveTimeout to 15 unless
+you want to burn your money. You keep several gates open for a single
+user who doesn't use them most of the time while you lock others out.
+<P>
+</BLOCKQUOTE>
+<P>(Julian)
+<BLOCKQUOTE>
+Hm, I think the browsers fetch the objects by creating 3-4
+connections (not sure how many exactly). If there is a KeepAlive option
+in the httpd.conf you can expect small number of inactive connections
+after the page download is completed. Without this option the client is
+forced to create new connections after each object is downloaded and
+the HTTP connections are not reused.
+<P>The browsers reuse the connection but there are more than one
+connections.
+<P>KeepAlive Off can be useful for banner serving but a short
+KeepAlive period has its advantages in some cases with long rtt where
+the connection setups costs time and because the modern browsers are
+limited to the number of connections they open. 
+Of course, the default
+period can be reduced but its value depends on the served content,
+whether the client is expected to open many connections for short
+period or just one.
+</BLOCKQUOTE>
+<P>Peter Mueller <CODE>pmueller@sidestep.com</CODE> 01 May 2001
+<P>
+<BLOCKQUOTE>
+I was searching around on the web and found the following relevant links..
+<P>
+<PRE>
+http://thingy.kcilink.com/modperlguide/performance/KeepAlive.html
+http://httpd.apache.org/docs/keepalive.html -- not that useful
+http://www.apache.gamma.ru/docs/misc/fin_wait_2.html -- old but interesting
+</PRE>
+</BLOCKQUOTE>
+<P>Andreas J. Koenig <CODE>andreas.koenig@anima.de</CODE> 02 May 2001
+<BLOCKQUOTE>
+If you have 5 servers with 15 secs KeepAliveTimeout, then
+you can serve
+<P>
+<P>60*60*24*5/15 = 28800 requests per day
+<P>Joe
+<BLOCKQUOTE>
+ 
+don't you actually have MaxClients=150 servers available and this
+can be increased to several thousand presumably?
+</BLOCKQUOTE>
+<P>Peter Mueller
+<BLOCKQUOTE>
+I think a factor of 64'000 is forgotten here (number of possible reply
+ports), plus the fact that most http connections do seem to terminate
+immediately, despite the KeepAlive.
+</BLOCKQUOTE>
+<P>Sure, and people do this and buy lots of RAM for them. But many of
+them servers are just in 'K' state, waiting for more data on these
+KeepAlive connections. Moreover, they do not compile the status module
+into their servers and never notice.
+<P>Let's rewrite the above formula:
+<P>MaxClients / KeepAliveTimeout
+<P>denotes the number of requests that can be satisfied if all clients
+*send* a keepalive header (I think that's "Connection: keepalive") but
+*do not actually use* the kept-alive line. If they actually use the
+kept-alive line, you can serve more, of course.
+<P>Try this: start apache with the -X
+flag, so it will not fork children and set the keepalivetimeout to 60.
+Then load a page from it with Netscape that contains many images. You
+will notice that many pictures arive quickly and a few pictures arive
+after a long, long, long, looooong time.
+<P>When the browser parses the incoming HTML stream and sees the first
+IMG tag it will fire off the first IMG request. It will do likewise
+for the next IMG tag. At some point it will reach an IMG tag and be
+able to re-use an open keepalive connection. This is good and does
+save time. But if a whole second has passed after a keepalive request
+it becomes very unlikely that this connection will be re-used ever, so
+15 seconds is braindead. One or two seconds is OK.
+<P>In the above experiment my Netscape loaded 14 images immediately after
+the HTML page was loaded, but it took about a minute for each of the
+remaining 4 images which happened to be the first in the HTML stream.
+</BLOCKQUOTE>
+<P>Joe
+<P>Here's the output of ipvsadm after downloading the same 80 gif page
+with the -X option on apache (only one httpd is seen with ps, rather
+than the 5 I usually have).
+<P>
+<PRE>
+director:/etc/lvs# ipvsadm
+IP Virtual Server version 0.2.11 (size=16384)                  
+Prot LocalAddress:Port Scheduler Flags                         
+  -> RemoteAddress:Port             Forward Weight ActiveConn InActConn
+TCP  lvs.mack.net:http rr
+  -> bashfull.mack.net:http         Route   1      1          1         
+  -> sneezy.mack.net:http           Route   1      0          2         
+</PRE>
+<P>The page shows a lot of loading at the status line, then stops showing 100% of 30k.
+However the downloaded page is blank. A few seconds later the gifs are displayed.
+The client shows 4 connections in CLOSE_WAIT and the real-servers
+each show 2 connections in FIN_WAIT2.
+<P>Paul J. Baker <CODE>pbaker@where2getit.com</CODE> 02 May 2001
+<BLOCKQUOTE>
+The KeepAliveTimeout value is NOT the connection time out. 
+It says how long Apache will keep an active connection open waiting for a 
+new request to come on the SAME connection after it has fulfilled a 
+request. Setting this to 15 seconds does not mean apache cuts all 
+connections after 15 seconds.
+<P>I write server load-testing software so I have do quiet a bit of 
+research in the behaviour of each browser. If Netscape hits a page with 
+a lot of images on it, it will usually open about 8 connections. It will 
+use these 8 connections to download things as quickly as it can. If the 
+server cuts each connection after 1 request is fullfilled, then Netscape 
+browser has to keep reconnecting. This costs a lot of time. KeepAlive is 
+a GOOD THING. Netscape does close the connections when it is done with 
+them which will be well before the 15 seconds since the last request expire.
+<P>Think of KeepAliveTimeout as being like an Idle Timeout in FTP. Imagine 
+it being set to 15 seconds. 
+</BLOCKQUOTE>
+<P>
+<H2><A NAME="ss10.17">10.17 Dynamically generated images on web pages</A>
+</H2>
+
+<P>
+<P>Solutions are to generate the image on a shared directory
+or to use fwmark to setup the LVS. 
+Both methods are described in the section using fwmark for 
+<A HREF="LVS-HOWTO-8.html#dynamic">dynamically generated images</A>. 
+<P>
+<H2><A NAME="ss10.18">10.18 other considerations with http: logs, shutting down httpd, cookies, mod_proxy, indexing programs</A>
+</H2>
+
+<P>
+<P>
+<H3>Logs</H3>
+
+<P>
+<P>
+<PRE>
+>From: Emmanuel Anne &lt;tt/emanne@absysteme.fr/
+
+>.. the problem about the logs. Apparently the best is to have
+>each web server process its log file on a local disk, and then
+>to make stats on both all files for the same period...
+>It can become quite complex to handle, is there not a way to
+>have only one log file for all the servers
+</PRE>
+<P>(Joe)
+(hasn't been tested): log to a common nfs mounted disk?
+I don't know whether you can have httpds running on separate
+machines writing to the same file. I notice (using truss on
+Solaris) that apache does write locking on files while
+it is running. Possibly it write-locks the log files. Normally
+multiple forked httpds are running. Presumably each of them
+writes to the log files and presumably each of them locks the
+log files for writing.
+<P>
+<H3>Shutting down http</H3>
+
+<P>
+<P>You need to shut down httpd gracefully, by bringing the weight
+to 0 and letting connections drop, or you will not be able to 
+bind to port 80 when you restart httpd.
+If you want to do on the fly modifications to your httpd, and keep 
+all real-servers in the same state, you may have problems. 
+<P>Date: Fri, 05 Jan 2001 08:12:05 -0800
+From: Thornton Prime <CODE>thornton@jalan.com</CODE>
+<P>
+<PRE>
+> I have been having some problems restarting apache on servers that are
+> using LVS-NAT and was hoping someone had some insight or a workaround.
+> 
+> Basically, when I make a configuration change to my webservers and I try
+> to restart them (either with a complete shutdown or even just a graceful
+> restart), Apache tries to close all the current connections and re-bind
+> to the port. The problem is that invariably it takes several minutes for
+> all the current connections to clear even if I kill apache, and the
+> server won't start as long as any socket is open on port 80, even if it
+> is in a 'CLOSING' state.
+
+> > Michael E Brown wrote:
+> > 
+> > Catch-22. I think the proper way to do something like this is to take the
+> > affected server out of the LVS table _before_ making any configuration
+> > changes to the machine. Wait until all connections are closed, then make
+> > your change and restart apache. You should run into less problems this
+> > way. After the server has restarted, then add it back into the pool.
+>
+> I thought of that, but unfortunately I need to make sure that the
+> servers in the cluster remain in a near identical state, so the
+> reconfiguration time should be minimal.
+</PRE>
+<P>Julian wrote
+<P>Hm, I don't have such problems with Apache. I use the default
+configuration-time settings, may be with higher process limit only.
+Are you sure you use the latest 2.2 kernels in the real servers?
+<P>
+<PRE>
+> I'm guessing that my problem is that I am using LVS persistent
+> connections, and combined with apache's lingering close this makes it
+> difficult for apache to know the difference between a slow connection
+> and a dead connection when it tries to close down, so the time it takes
+> to clear some of the sockets approaches my LVS persistence time.
+>
+> I haven't tried turning off persistence, and I haven't tried
+> re-compiling apache without lingering-close. This is a production
+> cluster with rather heavy traffic and I don't have a test cluster to
+> play with. In the end rebooting the machine has been faster than waiting
+> for the ports to clear so I can restart apache, but this seems really
+> dumb, and doesn't work well because then my cluster machines have
+> different configuration states.
+</PRE>
+<P>One reason your servers to block can be a very low value for
+the client number. You can build apache in this way:
+<P>CFLAGS=-DHARD_SERVER_LIMIT=2048 ./configure ...
+<P>and then to increase MaxClients (up to the above limit). Try with
+different values. And don't play too much with the MinSpareServers and
+MaxSpareServers. Values near the default are preferred. Is your kernel
+compiled with higher value for the number of processes:
+<P>/usr/src/linux/include/linux/tasks.h
+<P>
+<PRE>
+> Is there any way anyone knows of to kill the sockets on the webserver
+> other than simply wait for them to clear out or rebooting the machine?
+> (I tried also taking the interface down and bringing it up again ...
+> that didn't work either.)
+>
+> Is there any way to 'reset' the MASQ table on the LVS machine to force a
+> reset?
+</PRE>
+<P>No way! The masq follows the TCP protocol and it is transparent
+to the both ends. The expiration timeouts in the LVS/MASQ box are high
+enough to allow the connection termination to complete. Do you remove
+the real servers from the LVS configuration before stopping the apaches?
+This can block the traffic and can delay the shutdown. It seems the
+fastest way to restart the apache is apachectl graceful, of course,
+if you don't change anything in apachectl (in the httpd args).
+<P>
+<H3>Cookies</H3>
+
+<P>
+<P>see 
+<A HREF="#cookie">cookie</A><P>
+<H3>URL parsing</H3>
+
+<P>
+<P>
+<PRE>
+Date: Wed, 13 Dec 2000 16:45:46 -0500 (EST)
+From: John Cronin &lt;tt/jsc3@havoc.gtf.org/
+
+> Is there any way to do URL parsing for http requests (ie send cgi-bin
+> requests to one server group, static to another group?)
+</PRE>
+<P>Probably the best way to do this is to do it in the html code itself;
+make all the cgis 
+<PRE>
+hrefs to cgi.&lt;your-domain-here>.com
+</PRE>
+.  Similarly,
+you can make images hrefs to 
+<PRE>
+image.&lt;your-domain-here>.com
+</PRE>
+.  You then
+set these up as additional virtual servers, in addition to your www
+virtual server.  That is going to be a lot easier than parsing URLs;
+this is how they have done it at some of the places I have done
+consulting for; some of those places were using Extreme Networks load
+balancers, or Resonate, or something like that, using dozens of Sun
+and Linux servers, in multiple hosting facilities.
+<P>from Horms
+<P>What you are after is a layer-7 switch, that is something that can
+inspect HTTP packets and make decisions bassed on that information. 
+You can use squid to do this, there are other options. A post was made
+to this list about doing this a while back. Try hunting through the
+archives.
+<P>LVS on the other hand is a layer-4 switch, the only information that it has
+available to it is IP address and port and protocol (TCP/IP or UDP/IP). It
+cannot inspect the data segment and see even understand that the request is
+an HTTP request, let alone that the URL requested is /cgi-bin or whatever. 
+<P>There has been talk of doing this, but to be honest it is a different
+problem to that which LVS solves and arguably should live in user space
+rather than kernel space as a _lot_ more proccessing is required.
+<P>
+<H3>mod_proxy</H3>
+
+<P>
+<P>
+<PRE>
+From: Atif Ghaffar &lt;tt/atif@4unet.net/
+> Michael E Brown wrote:
+>
+> On Mon, 25 Dec 2000, Sean wrote:
+>
+> > Hi,
+> >
+> > I need to forward request using the Direct Routing method to a server.
+> > However I determine which server to send the request to depending on the
+> > file it has requested in the HTTP GET not based on it's load. 
+
+> Use LVS to balance the load among several servers set up to reverse-proxy
+> your real-servers, set up the proxy servers to load-balance to
+> real-servers based upon content.
+> --
+</PRE>
+<P>On the LVS servers you can run apache with mod_proxy compiled in, then
+redirect traffic with it.
+<P>
+<PRE>
+Example
+
+        ProxyPass /files/downloads/ http://internaldownloadserver/ftp/
+        ProxyPass /images/ http://internalimagesserver/images/
+
+more on Proxy pass:
+http://www.linuxfocus.org/English/March2000/article147.html
+
+or you can use mod_rewrite, in that case, your REAL servers should be
+reachable from the net.
+
+there is also a transparent proxy module for apache
+http://www.stevek.com/projects/mod_tproxy/
+</PRE>
+<P>
+<H3><A NAME="indexing"></A> Running indexing programs (eg htdig) on the LVS</H3>
+
+<P>
+<P>(From Ted I think)
+<P>Setup - 
+<P>real-servers are node1.foobar.com, node2.foobar.com...
+nodeN.foobar.com, director has VIP=lvs.foobar.com (all
+real-servers appear as lvs.foobar.com to users).
+<P>Problem - 
+<P>if you run the indexing program on one of the (identical)
+real-servers, the urls of the indexed files will be
+<P>http://nodeX.foobar.com/filename
+<P>These urls will be unuseable by clients out in internetland since
+the real-servers are not individually accessable by clients.
+<P>If instead you run the indexing program from outside the LVS (as
+a user), you will get the correct urls for the files, but you
+will have to move/copy your index back to the real-servers.
+<P>Solution (from Ted Pavlic, edited by Joe).
+<P>On the indexing node, if you are using VS-NAT add a non-arping
+device (eg lo:0, tunl0, ppp0, slip0 or dummy) with IP=VIP as if
+you were setting up VS-DR (or VS-Tun). With VS-DR/VS-Tun this
+device with the VIP is already setup. The VIP is associated in
+dns with the name lvs.foobar.com. To index, on the indexing node,
+start indexing from http://lvs.foobar.com and the real-server will
+index itself giving the URLs appropriate for the user in the
+index.
+<P>Alternately (for VS-NAT), on the indexing node, add the
+following line to /etc/hosts
+<P>127.0.0.1       localhost lvs.foobar.com
+<P>make sure your resolver looks to /etc/hosts before it looks to
+dns and then run your indexing program. This is a less general
+solution, since if the name of lvs.foobar.com was changed to
+lvs.bazbar.com, or if lvs.foobar.com is changed to be a CNAME,
+then you would have to edit all your hosts files. The solution
+with the VIP on every machine would be handled by dns.
+<P>There is no need to fool with anything unless you are running
+VS-NAT.
+<P>
+<H2><A NAME="https"></A> <A NAME="ss10.19">10.19 https</A>
+</H2>
+
+<P>
+<P>http is an IP based protocol, while https is a name based protol.
+<P>http: you can test an httpd from the console by
+configuring it to listen on the RIP of the real-server. 
+Then when you bring up the LVS you can re-configure it to
+listen on the VIP.
+<P>https: requires a certificate with the official (DNS) name of the server as
+the client sees it (the DNS name of the LVS cluster which is
+associated with  the VIP). 
+The https on the real-server
+then must be setup as if it had the name of the LVS cluster.  
+To do this, activate the VIP on a device on the real-server (it can
+be non-arping or arping - make sure there are no other machines
+with the VIP on the network or disconnect your real-server),
+make sure that the real-server can resolve the DNS
+name of the LVS to the VIP (by dns or /etc/hosts), setup the
+certificate and conf file for https and startup the httpd. Check
+that a netscape client running on the real-server (so that it
+connects to the real-server's VIP and not to the arping VIP on 
+the director) can connect to https://lvs.clustername.org
+<P>Do this for all the real-servers, then use ipvsadm on the
+director to forward https requests to each of the RIPs.
+<P>The scheduling method for https must be persistent for keys to
+remain valid.
+<P>
+<H2><A NAME="databases"></A> <A NAME="ss10.20">10.20 Databases</A>
+</H2>
+
+<P>
+<P>Normal databaseds (eg mysqld, i.e. anything but
+Oracle's parallel database server for several 100k$)
+running under LVS suffer the same restrictions of single
+writer/many readers as does any other service (eg smtp) where the user
+can write to files on the real-server. 
+<P>Databases running independantly on several real-servers
+have to be kept synchronised for content, just as do
+webservers. If the database files are read-only as far
+as the LVS clients are concerned, and the LVS administrator 
+can update each copy of the database on the real-servers 
+at regular intervals (eg a script running at 
+3am) then you can run a copy of the databased on each
+real-server, reading the files which you are  
+keeping synchronised.  
+<P>Online transaction processing requires that LVS clients 
+be able to write to the database. 
+<P>If you try to do this by setting up an LVS where each real-server
+has a databased and its own database files, then writes 
+from a particular user will go to only one of the real-servers. 
+The database files on the other real-servers will not 
+be updated and subsequent LVS users will be presented
+with inconsistent copies of the database files. 
+<P>The Linux Scalable Database project 
+http://lsdproject.sourceforge.net/ is working on code to
+serialise client writes so that they can be written to all 
+real-servers by an intermediate agent. Their code is experimental
+at the moment, but is a good prospect in the long term for 
+setting up multiple databased and file systems on separate
+real-servers.
+<P>Currently most databased are deployed in a multi-tier setup.
+The clients are out in internet land; they connect to a 
+web-server which has clients for the database;
+the web-server database client connects to a single databased. 
+In this arrangement the LVS should balance the webservers/database
+clients and not balance the database directly.
+<P>Production LVS databases, eg the service implemented by 
+Ryan Hulsker <CODE>RHulsker@ServiceIntelligence.com</CODE> (sample load
+data at http://www.secretshopnet.com/mrtg/) have the LVS users 
+connect to database clients (perl scripts running under a webpage) 
+on each real-server. These database clients connect to a 
+single databased running on a backend machine that the LVS
+user can't access. The databased isn't being LVS'ed - 
+instead the user connects to LVS'ed database clients on the 
+real-server(s) which handle intermediate dataprocessing, 
+increasing your throughput. 
+<P>The approach of having databaseds on each real-server
+accessing a common filesystem on a back-end server, fails.
+Tests with mysqld running on each of two real-servers working off
+the same database files mounted from a backend machine, showed that
+reads were OK, but writes from any real-server either weren't seen
+by the other mysqld or corrupted the database files. Presumably 
+each mysqld thinks it owns the database files and keeps copies
+of locks and pointers. If another mysqld is updating the filesystem
+at the same time then these first set of locks and pointers are invalid.
+Presumably any setup in which multiple databaseds were writing
+to one file system (whether NFS'ed, GFS'ed, coda, intermezzo...)
+would fail for the same reason.
+<P>In an early attempt to setup this sort of LVS 
+jake buchholz <CODE>jake@execpc.com</CODE> setup an LVS'ed mysql 
+database with a webinterface. LVS was to serve http 
+and each real-server to connect to the mysqld running 
+on itself. Jake wanted the mysql service to be lvs'ed as
+well and for each real-server to be a mysql client. The solution
+was to have 2 VIPs on the director, one for http and the other
+for mysqld. Each http real-server makes a mysql request to the
+myqslVIP. In this case no real-server is allowed to have both
+a mysqld and an httpd. A single copy of the database is nfs'ed from a
+fileserver. This works for reads. 
+<P>
+<P>
+<A HREF="http://www.mysql.com">MySQL</A>
+(and most other databases) supports replication of databases.
+<P>
+<P>Ted Pavlic <CODE>tpavlic@netwalk.com</CODE>
+on Fri, 23 Mar 2001
+<P>When used with LVS, a replicated database is still a single database.
+The MySQL service is not load balanced. HOWEVER, it is possible to put some of
+your databases on one server and others on another. Replicate each SET of
+databases to the OTHER server and only access them from the other server
+when needed (at an application or at some fail-over level).
+<P>Doug Sisk <CODE>sisk@coolpagehosting.com</CODE> 9 May 2001
+<P>An 
+<A HREF="http://www.phpbuilder.com/columns/tanoviceanu20000912.php3">article on mysql's built in replication facility</A><P>
+<P>
+<H2><A NAME="cookie"></A> <A NAME="ss10.21">10.21 Cookies</A>
+</H2>
+
+<P>
+<P>Cookies are not a service. 
+Cookies are a mechanism for maintaining state for a client when using
+the stateless http/https protocols. Other methods for maintaining
+state involve passing information to the client in the URL. 
+(This can be done with <EM>e.g.</EM> 
+<A HREF="http://www.php.org/">php</A>.)
+Cookies are passed between servers and
+clients which have http, https and/or database services and need to
+be considered when setting up an LVS.
+<P>For the cookie specification see 
+<A HREF="http://home.netscape.com/newsref/std/cookie_spec.html">netscape site</A>.
+<P>Being a layer 4 switch, LVS doesn't inspect the content of packets and
+doesn't know what's in them. A cookie is contained in a packet and
+the packet looks just like any other packet to an LVS.
+<P>
+<PRE>
+Eric Brown wrote:
+> Can LVS in any of its modes be configured to support cookie based persistent
+> sessions?
+
+Date: Wed, 3 Jan 2001 19:40:58 -0800
+From: Horms &lt;tt/horms@vergenet.net/
+
+No.
+
+This would require inspection of the TCP data secion, and infact an
+understanding of HTTP. LVS has access only to the TCP headers.
+</PRE>
+<P>Roberto Nibali <CODE>ratz@tac.ch</CODE> 19 Apr 2001
+<P>LVS is a Layer4 load balancer and can't do content based (L7) load balancing.
+<P>You shouldn't try to solve this problem by changing the TCP Layer to provide a 
+solution which should be handled by the Application Layer. You should never
+touch/tweak TCP settings out of the boundaries given in the various RFC's and
+their implementations.
+<P>If your application passes a cookie to the client, these are
+the general approaches:
+<P>
+<UL>
+<LI>buy an L7 load balancer (and don't use LVS).
+</LI>
+<LI>Set a very high persistency timeout and hope it is higher than the period
+a client will wait to come back after he found his credit card, or look
+at other sites, or have a cup of coffee. 
+<P>
+<P>This is not a good solution.
+<UL>
+<LI>Increased persistency timeout increases the number of 
+concurrent connections possible, which increases the amount of memory
+required to hold the connection table. 
+A persistency timeout of 30min, with clients connecting at 500 connections/s 
+you would need a memory pool of at least: 30*60*128*500/(1024*1024) = 109 MBytes.
+With the standard timeout of 300 seconds, you'd only need 109/6 = 18 Mbytes.</LI>
+<LI>Long persistency times are incompatible with the DoS defense strategies
+employeed by 
+<A HREF="LVS-HOWTO-18.html#DoS">secure_tcp</A>.</LI>
+</UL>
+<P>
+</LI>
+<LI> Have a 2-tier architecture where you have the application directly on
+the webserver itself and maybe helped by a database. The problem of the cookies
+storage is not solved however. You have to deal with the replication
+problem. Imagine following setup:
+ 
+<PRE>
+ 
+  
+                       ---->  Web1/App -->
+                     /                    \
+  Clients  ----> director ->  Web2/App ---> DB Server
+                     \                    /
+                       ---->  Web3/App -->
+</PRE>
+
+
+Cookies are generated and stored locally on each WebX server. But if you have
+a persistency timeout of 300s (default LVS setting) and the client had his cup
+of coffee while entering his visa numbers, he would get to a new server. This
+new server whould then ask the client to reauthenticate.
+There are solutions to this <EM>e.g</EM>
+<UL>
+<LI>NFS export a dedicated cookie directory over the back-interfaces. 
+Cookies are quickly distributed among the servers.</LI>
+<LI>the application is written to handle cookie replication 
+and propagation between the WebX servers (you have at least 299 seconds time to 
+replicate the cookie on all web servers. This should be enough even
+for distributing over serial line and do a crosscheck :)
+<P>
+<P>This does not work (well) for geographically distributed webserver.
+<P>
+</LI>
+</UL>
+
+</LI>
+<LI>3-Tier architecture 
+
+<PRE>
+
+                       -->  Web1 --
+                     /              \
+  Clients  ----> LVS ---->  Web2 ----> Application Server &lt;---> DB Server
+                     \              /
+                       -->  Web3 -->
+</PRE>
+
+
+The cookies are generated by the application server and either stored there or
+on the database server. If a request comes in, the LVS assigns the request f.e
+to Web1 and sets the persistency timeout. Web1 does a short message exchange
+with the application server which generates the sessionID as a cookie and 
+stores it. The webserver sends the cookie back and now we are safe. Again this
+whole procedure has t_pers_timeout (300 seconds normally) amout of time. Let's
+assume the client times out (has gone for a cup of coffee).
+When he comes back normally on a Layer4 load balancer he will be
+forwarded to a new server, (say Web2). The CGI script on Web2
+does the same as happened originally on Web1: 
+it generates a cookie as sessionID. 
+But the application server will tell the script that there is already a 
+cookie for this client and will pass it to Web2. 
+In this way we have unlimited persistency based on cookies but limited 
+persistency for TCP.
+
+Advantages
+<UL>
+<LI>set your own persistency timeout values</LI>
+<LI>TCP state timeout values are not changed.</LI>
+<LI>table lookup is faster </LI>
+<LI>it's cheaper than buying an L7 load balancer</LI>
+</UL>
+
+
+Disadvantages:
+<UL>
+<LI>more complex setup, more hardware</LI>
+<LI>you have to write some software</LI>
+</UL>
+
+<P>
+<P>
+</LI>
+<LI>If a separate database is running on each webserver, use
+replication to copy the cookie between servers. (You have 300 secs
+to do this). This was also mentioned by Ted Pavlic in connection
+with 
+<A HREF="#databases">databases</A>.</LI>
+</UL>
+<P>
+<H2><A NAME="rshd"></A> <A NAME="ss10.22">10.22 r commands; rsh, rcp, and their ssh replacements</A>
+</H2>
+
+<P>
+<P>An example of using rsh to copy files is in
+<A HREF="http://www.linuxvirtualserver.org/Joseph.Mack/performance/single_realserver_performance.html">performance data for single real-server LVS</A> Sect 5.2,  
+<P>Caution: The matter of rsh came up in a private e-mail exchange. The
+person had found that rshd, operating as an LVS'ed service, 
+initiated a call (rsh client request) to the rshd running on the LVS client. 
+(See Stevens &quot;Unix Network Programming&quot; Chapter 14, which explains rsh.) 
+This call will come from the RIP rather than the VIP. 
+This will require rsh to be run under VS-NAT or else 
+the real-servers must be able to contact the client directly.
+Similar requests from the 
+<A HREF="LVS-HOWTO-16.html#authd">identd</A> client 
+and 
+<A HREF="#passive_ftp">passive ftp</A> on real-servers 
+cause problems for LVS.
+<P>
+<H2><A NAME="ss10.23">10.23 nfs</A>
+</H2>
+
+<P>
+<P>It is possible with LVS to export directories from real-servers
+to a client, making an nfs fileserver 
+(see 
+<A HREF="http://www.linuxvirtualserver.org/Joseph.Mack/performance/single_realserver_performance.html">performance data for single real-server LVS</A>), 
+near the end).
+This is all fine and dandy except
+that there is no easy way to fail-out the nfs service.
+<P>Joseph Mack wrote:
+<BLOCKQUOTE>
+One of the problems with running NFS as an LVS'ed service (ie to
+make an LVS fileserver), that has come up on this mailing list is that a
+filehandle is generated from disk geometry and file location data. In
+general then the identical copies of the same file that are on different
+real-servers will have different file handles. When a real-server is
+failed out (e.g. for maintenance)  and the client is swapped over to a new
+machine (which he is not supposed to be able to detect), he will now have
+an invalid file handle.
+<P>Is our understanding of the matter correct?
+</BLOCKQUOTE>
+<P>Dave Higgen <CODE>dhiggen@valinux.com</CODE> 14 Nov 2000 
+<P>In principle.  The file handle actually contains a 'dev', indicating the
+filesystem, the inode number of the file, and a generation number used
+to avoid confusion if the file is deleted and the inode reused for
+another file.  You could arrange things so that the secondary server has
+the same FS dev... but there is no guarantee that equivalent files will
+have the same inode number; (depends on order of file creation etc.) 
+And finally the kicker is that the generation number on any given system
+will almost certainly be different on equivalent files, since it's
+created from a random seed.
+<P>
+<BLOCKQUOTE>
+If so is it possible to generate a filehandle only on the
+path/name of the file say?
+</BLOCKQUOTE>
+<P>Well, as I explained, the file handle doesn't contain anything
+explicitly related to the pathname.  (File handles aren't big enough for
+that; only 32 bytes in NFS2, up to 64 in NFS3.)
+<P>Trying to change the way file handles are generated would be a MASSIVE
+redesign project in the NFS code, I'm afraid... In fact, you would
+really need some kind of "universal invariant file ID" which would have
+to be supported by the underlying local filesystem, so it would ramify
+heavily into other parts of the system too...
+<P>NFS just doesn't lend itself to replication of 'live' filesystems in
+this manner.  It was never a design consideration when it was being
+developed (over 15 years ago, now!)
+<P>There HAVE been a number of heroic (and doomed!) efforts to do this kind
+of thing; for example, Auspex had a project called 'serverguard' a few
+years ago into which they poured millions in resources... and never got
+it working properly...  :-(
+<P>Sorry.  Not the answer you were hoping for, I guess...
+<P>
+<H2><A NAME="ss10.24">10.24 RealNetworks streaming protocols</A>
+</H2>
+
+<P>
+<P>Jerry Glomph Black <CODE>black@real.com</CODE> August 25, 2000
+<P>RealNetworks' streaming protocols are
+<P>
+<UL>
+<LI> PNM (TCP on port 7070, UDP from server -&gt; player on ports 6970-7170).
+PNM was the original protocol in version 1 through 5. It's now mostly legacy.</LI>
+<LI> RTSP (TCP on port 554, similar UDP as above, but often on multiple ports)
+With the G2 release, we adopted the RTSP delivery standard. The current
+version, RealPlayer 8 came out about two weeks ago. A free one is
+available to run on just about any platform in common use today. The Linux
+versions are great.</LI>
+<LI> There's also a HTTP/TCP-only fallback mode which is (usually) on port 8080.</LI>
+</UL>
+<P>The server configuration can be altered to run on any port, but the above
+numbers are the customary, and almost universally-used ones.
+<P>
+<P>Mark Winter, a network/system engineer in my group wrote up the following
+detailed recipe on how we do it with LVS:
+<P>add IP binding in the G2 server config file
+<PRE>
+&lt;List Name="IPBindings"&gt;
+     &lt;Var Address_1="&lt;real ip address&gt;"/&gt;
+     &lt;Var Address_2="127.0.0.1"/&gt;
+     &lt;Var Address_3="&lt;virtual ip address&gt;"/&gt;
+&lt;/List&gt;
+
+On the LVS side
+./ipvsadm -A -u &lt;VIP&gt;:0  -p
+./ipvsadm -A -t &lt;VIP&gt;:554  -p
+./ipvsadm -A -t &lt;VIP&gt;:7070  -p
+./ipvsadm -A -t &lt;VIP&gt;:8080  -p
+
+./ipvsadm -a -u &lt;VIP&gt;:0 -r &lt;REAL IP ADDRESS&gt;
+./ipvsadm -a -t &lt;VIP&gt;:554 -r &lt;REAL IP ADDRESS&gt;
+./ipvsadm -a -t &lt;VIP&gt;:7070 -r &lt;REAL IP ADDRESS&gt;
+./ipvsadm -a -t &lt;VIP&gt;:8080 -r &lt;REAL IP ADDRESS&gt;
+</PRE>
+<P>
+<P>(Ted)
+<P>I just wanted to add that if you use FWMARK, you might be able to make it a
+little simpler and not have to worry about forwarding EVERY UDP port.
+<P>
+<PRE>
+# Mark packets with FWMARK1
+ipchains -A input -d &lt;VIP&gt;/32 7070 -p tcp -m 1
+ipchains -A input -d &lt;VIP&gt;/32 554 -p tcp -m 1
+ipchains -A input -d &lt;VIP&gt;/32 8080 -p tcp -m 1
+ipchains -A input -d &lt;VIP&gt;/32 6970:7170 -p udp -m 1
+
+# Setup the LVS to listen to FWMARK1
+ipvsadm -A -f 1 -p
+
+# Setup the real server
+ipvsadm -a -f 1 -r &lt;RIP&gt;
+</PRE>
+<P>Not only is this only six lines rather than eight, but now you've setup a
+persistent port grouping. You do not have to forward EVERY UDP port, and
+you're still free to setup non-persistent services (or other persistent
+services that are persistent based on other ports).
+<P>When you want to remove a real server, you now do not have to remove FOUR
+real servers, you just remove one. Same thing with adding. Plus, if you want
+to change what's forwarded to each real server, you can do so with ipchains
+and not bother with taking up and down the LVS. ALSO... if you have an
+entire network of VIPs, you can setup IPCHAINS rules which will forward the
+entire network automatically rather than each VIP one by one.
+<P>--------------------------
+<HR>
+<A HREF="LVS-HOWTO-11.html">Next</A>
+<A HREF="LVS-HOWTO-9.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc10">Contents</A>
+</BODY>
+</HTML>

@@ -1,0 +1,74 @@
+PULSE 8 "Tue Sep 21 1999" 
+4
+NAME
+pulse \- heartbeating daemon for monitoring the health of cluster nodes 
+SYNOPSIS
+
+"pulse [-c " file "|--configfile= " file "] [-n|--nodaemon]
+"[--forceactive] [--lvs= " path "] [--fos= " path "]"
+"[-v|--verbose] [-t|--test-start] [--norun]"
+" [-?|--help] [--usage] [--version]"
+
+DESCRIPTION
+pulse is a daemon used by lvsd nodes to monitor one another's health
+and to initiate the failover of the lvsd or fos daemon. 
+It makes use of the 
+lvs.cf(5) configuration file for items such as length of time between
+heartbeats and length of time before declaring the remote server to be dead
+and initiate a failover.
+
+pulse, which runs on the primary and backup nodes, is used by
+each to determine that the other is still alive. If the backup node fails to
+receive a heartbeat from the primary node after a set amount of time
+(specified in lvs.cf), it will assume ownership of all virtual
+service(s) being provided by the primary node. Its takeover process includes
+bringing up aliased device(s) for all virtual service(s) as well as sending
+out gratuitous ARPs to associate the floating IP(s) with the MAC address
+of the backup node.
+If and when a failed primary node returns to a functioning status, it assumes 
+the backup role unless specifically forced to assume
+the primary role. To reduce the number of faults seen by clients and avoid the
+breaking persistent client connections, you should minimize the number of
+failovers.
+OPTIONS
+
+"-c "file "|--configfile= "file
+Normally, pulse uses lvs.cf as its configuration file, but 
+this can be overridden and another file can be used.
+"-n|--nodaemon"
+Normally, pulse runs as a daemon but with this option
+runs in the foreground.  When running in this mode, pulse sends all
+output to STDOUT instead of to syslog.
+"--forceactive"
+When this flag is used, the machine that pulse runs on will forceably
+take over as the primary lvsd router and other machine will become the
+backup.
+"--lvs= "path
+By default, pulse looks in /usr/sbin for lvsd; use path
+to tell pulse to look elsewhere for the program.
+I "--fos= "path
+By default, pulse looks in /usr/sbin for os; use path
+to tell ulse to look elsewhere for the program.
+I "-t|--test-start"
+Runs pulse in a test mode. Reports, but does not actually start,
+the rest of the daemom processes (lvsd, fos, etc.).
+I "--norun"
+Historical. Same as --test-start.
+I "-v|--verbose"
+Displays debugging information
+I "-?|--help"
+Shows a verbose usage listing.
+I "--usage"
+Outputs a terse argument summary.
+I "--version"
+Displays program version.
+
+SEE ALSO
+lvs.cf (5),
+ipvsadmn (8),
+lvsd (8).
+fos (8).
+nanny (8).
+
+AUTHOR
+Erik Troan <ewt@redhat.com>

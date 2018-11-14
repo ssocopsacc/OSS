@@ -1,0 +1,14 @@
+#!/bin/sh
+# We use $1 as the argument in the TEST which will be the various IP's
+# of the real servers in the cluster.
+
+# Check for ftp service
+TEST=`echo "quit" | nc $1 21`
+TEST=`echo $TEST | grep -c 220`
+
+if [ $TEST != "1" ]; then
+        echo "OK"
+else
+        echo "FAIL"
+	# /bin/echo | mail pager@failure.company.com -s "NOTICE: $1 failed to provide ftp service"
+fi

@@ -1,0 +1,16 @@
+[Unit]
+Description=pulse is the controlling daemon that spawns off the lvs daemon as well as heartbeating and monitoring of services on the real servers.
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/usr/sbin/pulse $OPTIONS 
+ExecStartPost=/usr/bin/touch /var/lock/subsys/pulse
+ExecStop=/usr/bin/pkill pulse
+ExecStopPost=/usr/bin/rm -f /var/lock/subsys/pulse
+ExecReload=/usr/sbin/pulse -HUP
+RestartSec=1
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

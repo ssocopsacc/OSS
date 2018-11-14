@@ -1,0 +1,87 @@
+#!/bin/sh
+#
+# pulse		This script handles the starting and stopping of the various
+#		clustering services in Red Hat Linux.
+#
+# chkconfig: - 60 10
+# description:  pulse is the controlling daemon that spawns off the lvs \
+#		daemon as well as heartbeating and monitoring of services \
+#		on the real servers.
+# processname: pulse
+# pidfile: /var/run/pulse.pid
+# config: /etc/sysconfig/ha/lvs.cf
+
+# Source function library.
+. /etc/rc.d/init.d/functions
+
+# Source networking configuration.
+. /etc/sysconfig/network
+
+# Check that networking is up.
+if [ ${NETWORKING} = "no" ] ; then
+	exit 1
+fi
+
+if [ -f /etc/sysconfig/pulse ]; then
+	. /etc/sysconfig/pulse
+fi
+
+if [ ! -f /usr/sbin/pulse ]  ; then
+	exit 5
+fi
+
+if [ ! -f /etc/sysconfig/ha/lvs.cf ] ; then
+	exit 6
+fi
+
+RETVAL=0
+
+# See how we were called.
+case "$1" in
+  start)
+        echo -n "Starting pulse: "
+        daemon pulse $OPTIONS
+	RETVAL=$?
+        echo
+        [ $RETVAL -eq 0 ] && touch /var/lock/subsys/pulse
+        ;;
+
+  stop)
+        echo -n "Shutting down pulse: "
+	killproc pulse
+	RETVAL=$?
+        echo
+        [ $RETVAL -eq 0 ] && rm -f /var/lock/subsys/pulse
+        ;;
+
+  status)
+	status pulse
+	RETVAL=$?
+	;;
+
+  restart)
+	$0 stop
+	$0 start
+	RETVAL=$?
+	;;
+
+  condrestart)
+	$0 status
+	if [ $? = 0 ]; then
+	    $0 restart
+	fi
+	RETVAL=0
+	;;
+
+  reload)
+	echo -n "Reloading pulse: "
+	killproc pulse -HUP
+	RETVAL=$?
+	;;
+
+  *)
+        echo "Usage: pulse {start|stop|status|restart|condrestart|reload}"
+        exit 1
+esac
+
+exit $RETVAL

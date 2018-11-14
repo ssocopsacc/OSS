@@ -1,0 +1,8 @@
+/var/log/piranha/apache_runtime_status /var/log/piranha/piranha-gui /var/log/piranha/piranha-gui-access {
+    missingok
+    notifempty
+    sharedscripts
+    postrotate
+	/bin/kill -HUP `cat /var/run/piranha-httpd.pid 2>/dev/null` 2> /dev/null || true
+    endscript
+}

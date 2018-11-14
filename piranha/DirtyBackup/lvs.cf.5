@@ -1,0 +1,356 @@
+.TH LVS.CF 5 "4 July 2001"
+.SH NAME
+lvs.cf \- configuration file for lvs
+.SH DESCRIPTION
+.LP
+This file contains the configuration information for \fBpiranha\fR and is
+normally located in \fB/etc/sysconfig/ha/lvs.cf\fR. lvs.cf 
+is read and updated from the \fBpiranha\fR web configuration tool,
+which uses \fBlvs\fR(8) to actually work with the file.
+.SH "GLOBAL OPTIONS"
+Global settings affect all aspects of the cluster, including virtual servers
+and real servers.
+.TP
+.BI "service = [lvs|fos]"
+Indicates which set of defined services are to be used. Virtual Servers
+and Failover Services as mutually exclusive; although they may both be
+defined in the same config file, thay cannot both be running simultaneously.
+This option specifies which section is to be used.
+.TP
+.BI "primary = a.b.c.d" 
+This is the IP (or hostname) of the primary LVS machine.
+.TP
+.BI "primary_private = a.b.c.d"
+Indicates the IP address of an alternative network device for private heartbeating.
+It is not necessary to fill out this field for piranha to work as it simply provides
+an alternative method of checking an IP service is running.
+.TP
+.BI "backup = a.b.c.d"
+This is the IP (or hostname) of the backup (or failover) LVS machine.
+.TP
+.BI "backup_private = a.b.c.d"
+This is akin to primary_private but refers to the alternative IP device on the backup
+.TP
+.BI "backup_active = [0|1]"
+This dictates if the backup server option is active or inactive.
+This option must be set if the backup server is to function in a failover
+manner.
+.\" .TP
+.\" .BI "mode = [1|2]"
+.\" The LVS is a single point of failure (which is bad).  To protect against this
+.\" machine being a SPOF, a redundant backup server should be used.  There are 2
+.\" possible modes of operation regarding failed LVS reentry:
+.\" .TP
+.\" .ti 7
+.\" mode = 1 
+.\" The backup machine operates as the primary as long as the primary 
+.\" machine is dead.  Once the failed machine returns to the cluster, the backup 
+.\" machine reverts to being a backup.  This is the default behavior.
+.\" .TP
+.\" .ti 7
+.\" mode = 2 
+.\" The backup machine becomes the primary and the failed one (once it 
+.\" returns to the cluster) becomes the backup.  
+.TP
+.BI "heartbeat = [0|1]"
+Use heartbeat between the two LVS nodes.
+.TP
+.BI "keepalive = n"
+Number of seconds between heartbeats.
+.TP
+.BI "deadtime = n"
+Length of time before a node is declared dead and IP takeover occurs.
+.\" .TP
+.\" .BI "heartbeat_dev = [ttyS* eth*]"
+.\" This field lists the device(s) to be used for heartbeating between the two
+.\" LVS nodes.  Allowable entries include all ethernet devices and all serial
+.\" devices.
+.TP
+.BI "reservation_conflict_action = [nothing|preempt]"
+This option dictates what action should be taken when a scsi reservation conflict
+occurs during failover and the disk is found to be unexpectedly locked. You should
+think carefully about this option as your setup may or may not have a scsi controller
+setup to reset the scsi bus on power on or warm reboot.
+.TP
+.BI "debug = NONE"
+Ignore this option. Eventually it will become a means to dictate how much and what
+type of information about the state of the cluster is written to file.
+.TP
+.BI "rsh_command = "
+The command family used to sync file systems and config files.  Allowable
+options are either rsh (default) or ssh.  The appropriate .rhosts
+(or .ssh/authorized_keys) entries must be on all nodes so that connections can
+be made non-interactively.
+.sp
+Sync'ing of specified config files and directories will occur when \fBlvs\fR
+receives a SIGUSR1. \fIlvs.cf\fP(5) is automatically synced between the LVS
+nodes anytime it is written to.
+.TP
+.BI "network = [direct|nat|tunnel]"
+The \fBlvs\fR virtual server can reroute all of its incoming traffic via one
+of three methods; NAT (Network Address Translation), Direct Routing, or
+Tunneling (IP Encapsulation).
+.TP
+.BI "nat_router = a.b.c.d dev:n"
+If NAT routing is selected, this specifies the IP address and device of the
+routing interface.
+.TP
+.BI "nat_nmask = a.b.c.d"
+Optional. The subnet mask to apply to nat_router.
+.SH "PER-VIRTUAL SERVER SECTION"
+A per-virtual server section starts with 
+.sp
+.nf
+    \fBvirtual server-name\fP {
+
+    }
+.fi
+.sp
+where the string is a unique server identifier.  This doesn't have to match up
+to a FQDN.
+.LP
+The following items are required for each virtual server entry in the config
+file.
+.TP
+.BI "address = a.b.c.d"
+This is the address to be used for the virtual server.
+.TP
+.BI "sorry_server = a.b.c.d"
+This is the address to be used for the 'sorry' server.  If specified, requests
+for this virtual server will be redirected to this IP address in the event
+that no real servers are available to handle the request.
+.TP
+.BI "vip_nmask = a.b.c.d"
+Optional. This is the subnet mask to apply to the address of the virtual
+server.
+.TP
+.BI "active = [0|1]"
+This flag is used to indicate whether or not this particular virtual server is
+active.  If it is marked inactive, then all real servers being routed
+to by it will by default become inactive as well.
+.sp
+The following items are all optional entries (note the default values for
+many).
+.TP
+.BI "load_monitor = [uptime|rup|ruptime|none]"
+This specifies the method that the LVS can acquire CPU load information from
+the real servers.  This load information is used to adjust the weighting
+factor for each server entry in the LVS routing table.  Each method requires
+slightly different configurations to be present on the real servers and on the
+LVS nodes.  The default method is \fBuptime\fR. Specifying "none" causes
+the service monitor to skip load tests (required for most non-linux systems).
+.TP
+.BI "timeout = "
+This is the amount of time allowed before a presumed dead real server is
+removed from the LVS routing table.  Default is 10 seconds.
+.TP
+.BI "reentry = "
+This is the amount of time that a previously dead real server must be alive
+before the LVS will re-enter it into the routing table.  The purpose of
+this delay is to prevent troubled machines from causing a "ping-pong" effect.
+The default is 180 seconds.
+.TP
+.BI "port = xx"
+This is the port that the virtual server is instructed to listen to and
+redirect network requests from.  The default is port 80 (http).
+.TP
+.BI "send = xxx"
+If present, the specified text ("xxx") will
+be sent to the port of the virtual server
+as part of the test for whether the service is operational. The text
+is limited to 255 characters maximum. Characters must be
+printable/quotable, and may contain "\\n, \\r, \\\\, or \\'".
+Note that if both "send" and "expect" are specified, the send will
+always execute before the read for the expect is attempted.
+.TP
+.BI "send_program = path %h"
+For more advanced service verification, you can use this directive to specify the path to a service-checking script. This functionality is especially helpful for services that require dynamically changing data, such as HTTPS or SSL.
+To use this functionality, you must write a script that returns a textual response (that will be matched against 'expect' directive), set it to be executable, and specify the path to it. 
+To ensure that each server in the real server pool is checked, use the special token %h after the path to the script. This token is replaced with each real server's IP address as the script is called by the nanny daemon.
+If 'send_program' is used, then the 'send' is ignored. 
+.TP
+.BI "expect = xxx"
+If present, the specified text ("xxx") will be expected as a response
+from the port on the virtual server as part of the test for whether the
+service is operational. The text
+is limited to 255 characters maximum. Characters must be
+printable/quotable, and may contain "\\n, \\r, \\\\, or \\'".
+Note that if both "send" and "expect" are specified, the send will
+always execute before the read for the expect is attempted.
+If you wrote your own service-checking script, enter the response you told it to send if it was successful.
+.TP
+.BI "use_regex = [0|1]"
+If enabled, the expect string will be interpreted as a regular expression.
+.TP
+.BI "persistent = "
+The number of seconds that a connection between this virtual
+server and a real server will persist. If a request is received from a client
+within this number of seconds, it will be assigned to the same real server 
+that processed a prior request. If this parameter is missing or set to zero,
+connections with this virtual server are not persistent.
+.TP
+.BI "pmask = "
+The network mask to apply to persistence if enabled.
+Default is 255.255.255.255.
+.TP
+.BI "scheduler = [rr|lc|wlc|wrr]"
+This is the key part of the LVS router.  These methods of
+scheduling how incoming requests are routed are built as loadable kernel
+modules: Round Robin (\fBrr\fP), least-connections (\fBlc\fP), Weighted Least
+Connections (\fBwlc\fP, the default) and Weighted Round Robin (\fBwrr\fP).
+.\" .TP
+.\" .BI "master = a.b.c.d"
+.\" This is the IP address of the node which contains the master repository of
+.\" config files and data directories.  It is from this node that all system wide
+.\" file system updates are mirrored.
+.\" .TP
+.\" .BI "dirs = "
+.\" This section is a line-by-line listing of each master file/dir to be
+.\" mirrored to the slave nodes.  The format of each entry is:
+.\" .sp
+.\" .nf
+.\"      master location:remote location
+.\" .fi
+.\" .sp
+.\" For example:
+.\" .sp
+.\" .nf
+.\"         dirs = { 
+.\"                 /home/http/html:/mnt/raid0/html
+.\" 		/etc/httpd/conf/httpd.conf:/etc/httpd/conf/httpd.conf
+.\"         }
+.\" .sp
+.\" .nf
+.SS "REAL SERVER SECTIONS"
+A per-real server section starts with 
+.sp
+.nf
+    \fBserver servername\fP {
+
+    }
+.fi
+.sp
+where the string is a unique server identifier.  This doesn't have to match up
+to any real FQDN.
+.LP
+The following items are required for each real server entry in the config
+file.
+.TP
+.BI "address = a.b.c.d"
+This is the actual IP address being used by the real server.  In the cases of
+NAT type routing, it is generally one of the reserved, private IPs.
+.TP
+.BI "active = [0|1]"
+This flag is used to indicate whether or not this particular real server is
+active.
+.sp
+The following item is optional.
+.\" The following items are all optional entries (note the default values for
+.\" many).
+.\" .TP
+.\" .BI "log_file = "
+.\" All real servers log by default to /var/log/piranha/$SERVER_NAME-$DATE, but
+.\" this can be changed by setting this flag to something different.
+.\" .TP
+.\" .BI "port = xx"
+.\" By default the LVS redirects all packets to the same port that they were
+.\" received on, however, this can be overridden by setting this flag to a
+.\" different value.
+.TP
+.BI "weight = "
+This option enforces a skew affect by enabling more loading on a particular
+server.  The weights of all real servers influence the scheduling algorithm
+and a higher weight will load a particular server down with more redirects.
+The default value is 1.
+.TP
+An example real server entry might look like:
+.sp
+.nf
+      server 1 {
+                address = 192.168.10.2
+                active = 1
+.\"                 log_file = /var/log/piranha/server1
+.\"                 port = 80
+                weight = 1
+ 	 }
+.nf
+
+.SH "PER-FAILOVER SERVICE SECTION"
+A per-failover-service section starts with 
+.sp
+.nf
+    \fBfailover service-name\fP {
+    }
+.fi
+.sp
+where the service-name is a unique identifier. 
+.LP
+The following items are required for each failover service entry in the config
+file.
+.TP
+.BI "address = a.b.c.d dev:x"
+This is the address and device interface to be used for the virtual service.
+.TP
+.BI "vip_nmask = a.b.c.d"
+Optional. The netmask to apply to the service address.
+.TP
+.BI "active = [0|1]"
+This flag is used to indicate whether or not this particular virtual server is
+active.  If it is marked inactive, then all real servers being routed
+to by it will by default become inactive as well.
+.sp
+The following items are all optional entries (note the default values for
+many).
+.TP
+.BI "timeout = "
+This is the amount of time allowed before a service is presumed dead and will
+cause a failover.
+.TP
+.BI "reentry = "
+This is the amount of time that a previously dead partner system must be alive
+before it will be a candidate for possible failover. The purpose of
+this delay is to prevent troubled machines from causing a "ping-pong" effect.
+The default is 180 seconds.
+.TP
+.BI "port = xx"
+This is the port that the failover service is instructed to test.
+The default is port 80 (http).
+.TP
+.BI "send = xxx"
+If present, the specified text ("xxx") will
+be sent to the port of the virtual server
+as part of the test for whether the service is operational. The text
+is limited to 255 characters maximum. Characters must be
+printable/quotable, and may contain "\\n, \\r, \\\\, or \\'".
+Note that if both "send" and "expect" are specified, the send will
+always execute before the read for the expect is attempted.
+.TP
+.BI "expect = xxx"
+If present, the specified text ("xxx") will be expected as a response
+from the port on the virtual server as part of the test for whether the
+service is operational. The text
+is limited to 255 characters maximum. Characters must be
+printable/quotable, and may contain "\\n, \\r, \\\\, or \\'".
+Expect can also be a single '*' character to indicate any response
+characters are allowed.
+Note that if both "send" and "expect" are specified, the send will
+always execute before the read for the expect is attempted.
+.TP
+.BI "start_cmd = xxx"
+Mandatory; specifies the startup command/script to execute to start
+the failover service. Options can be specified, but must be
+separated by a single space.
+.TP
+.BI "stop_cmd = xxx"
+Mandatory; specifies the shutdown command/script to execute to stop
+the failover service. Options can be specified, but must be
+separated by a single space.
+
+.SH "SEE ALSO"
+\fBipvsadm\fP(8),
+\fBlvs\fP(8),
+\fBfos\fP(8),
+\fBpulse\fP(8).
+\fBsample.cf\fP file
+.br
+\fIhttp://www.linuxvirtualserver.org\fP

@@ -1,0 +1,188 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO: Useful things that have other place (yet)</TITLE>
+ <LINK HREF="LVS-HOWTO-22.html" REL=next>
+ <LINK HREF="LVS-HOWTO-20.html" REL=previous>
+ <LINK HREF="LVS-HOWTO.html#toc21" REL=contents>
+</HEAD>
+<BODY>
+<A HREF="LVS-HOWTO-22.html">Next</A>
+<A HREF="LVS-HOWTO-20.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc21">Contents</A>
+<HR>
+<H2><A NAME="s21">21. Useful things that have other place (yet)</A></H2>
+
+<P>
+<P>
+<H2><A NAME="ss21.1">21.1 Files which are kernel version dependant eg System.map and ipvsadm</A>
+</H2>
+
+<P>
+<P>I'm always booting into versions of the kernel which 
+don't match the version of the kernel in /usr/src/linux.
+This gives me the warning (eg when running `ps`)
+<P>
+<P>
+<PRE>
+Warning: /usr/src/linux/System.map has an incorrect kernel version. 
+</PRE>
+<P>As well, my version of ipvsadm doesn't work anymore (and will probably
+tell me that I don't have ipvsadm installed when I do).
+<P>My /usr/src directory has entries like
+<P>
+<PRE>
+linux-1.0.3-2.2.18-TP
+</PRE>
+<P>for the 2.2.18 kernel with the 1.0.3 ipvs patch applied and built
+with transparent proxy. I link this to linux-2.2.18
+<P>My /sbin director has ipvsadm-2.2.18 and ipvsadm-2.4.1 (ipvsadm
+versions match ipvs versions and not kernel versions, but it's
+close enough to kernel versions that labelling them by kernel versions
+works).
+<P>At bootup I run this script to get the right versions of these
+files.
+<P>
+<PRE>
+#always have the right System.map, ipvsadm...
+#no matter which kernel version you're running
+#Joseph Mack (C) 2001 released under GPL, jmack@wm7d.net, 
+
+#To use:
+#for files/directories which are kernel version specific.
+#
+#eg you'll get error messages about System.map being the wrong version unless
+#you have /usr/src/linux linked to the same version of linux as you booted from.
+#eg in /sbin: ipvsadm-2.4.1, ipvsadm-2.2.18 which is called as /sbin/ipvsadm
+#
+#in main you send a list of directories/files like /usr/src/linux/, /sbin/ipvsadm
+#for each item in this list, this program will
+#a. delete /usr/src/linux if linux is a link, otherwise do nothing if linux is a file
+#b. look for linux-x.x.x where x.x.x is the kernel version
+#c. ln -s linux-x.x.x linux, else issue notice if there is no linux-x.x.x
+#
+#---------------------
+
+ip_vs(){
+#IPVS_VERSION is assigned the version number of IPVS currently loaded
+
+if [ "$LINUX_KERNEL_SERIES" = "2.2" ]
+then
+        IPVS_VERSION=`grep "IP Virtual Server version" /proc/net/ip_vs | awk '{print \$5}'`
+        echo $IPVS_VERSION      
+
+elif [ "$LINUX_KERNEL_SERIES" = "2.4" ]
+then
+        IPVS_VERSION=`grep "IP Virtual Server version" /proc/net/ip_vs | awk '{print \$5}'`
+        echo $IPVS_VERSION      
+
+else
+        echo "Error: kernel $UNAME_R not from 2.2 or 2.4 series"
+        exit -1
+fi
+}
+
+make_link(){
+BASENAME=`/usr/bin/basename $1`
+#echo "BASENAME $BASENAME"
+
+cd `/usr/bin/dirname $1` 
+
+#if $BASENAME a link or doesn't exist
+if [ -L $BASENAME -o ! \( -e $BASENAME \) ]     
+then
+        #only do something if we have a target
+        if [ -d $BASENAME-${UNAME_R}-${IPVS_VERSION} -o -f $BASENAME-${UNAME_R}-${IPVS_VERSION} ] 
+        then
+                if [ -L $BASENAME ] #if the filename is a link, delete it
+                then
+                        /bin/rm $BASENAME
+                fi
+                #there is no $BASENAME now.
+                /bin/ln -s $BASENAME-${UNAME_R}-${IPVS_VERSION} $BASENAME
+        elif [ -d $BASENAME-${IPVS_VERSION}-${UNAME_R} -o -f $BASENAME-${IPVS_VERSION}-${UNAME_R} ] 
+        then
+                if [ -L $BASENAME ] #if the filename is a link, delete it
+                then
+                        /bin/rm $BASENAME
+                fi
+                #there is no $BASENAME now.
+                /bin/ln -s $BASENAME-${IPVS_VERSION}-${UNAME_R} $BASENAME
+        elif [ -d $BASENAME-${IPVS_VERSION} -o -f $BASENAME-${IPVS_VERSION} ] 
+        then
+                if [ -L $BASENAME ] #if the filename is a link, delete it
+                then
+                        /bin/rm $BASENAME
+                fi
+                #there is no $BASENAME now.
+                /bin/ln -s $BASENAME-${IPVS_VERSION} $BASENAME
+        elif [ -d $BASENAME-${UNAME_R} -o -f $BASENAME-${UNAME_R} ] 
+        then
+                if [ -L $BASENAME ] #if the filename is a link, delete it
+                then
+                        /bin/rm $BASENAME
+                fi
+                #there is no $BASENAME now.
+                /bin/ln -s $BASENAME-${UNAME_R} $BASENAME
+        else
+                echo "no $BASENAME-${UNAME_R} or $BASENAME-${IPVS_VERSION} to link to"
+        fi
+else
+        echo "cannot delete $BASENAME, doesn't exist or is a regular file"
+fi
+cd -
+}
+#-----------------
+#main:
+echo "rc.system_map "
+UNAME_R=`/bin/uname -r`
+LINUX_KERNEL_SERIES=${UNAME_R%.*}
+
+ip_vs
+if [ $? != "0" ]
+then
+        echo "Error: unable to determine IPVS version"
+        exit -1
+fi
+
+make_link /usr/src/linux
+make_link /sbin/ipvsadm 
+make_link /sbin/ipvsadm-save
+make_link /sbin/ipvsadm-restore
+make_link /usr/src/ipvs
+#make_link /bin/foo #a test, foo-x.x.x doesn't exist
+
+#-----------------
+</PRE>
+<P>Note:klogd is supposed to read files like /boot/System.map-&lt;kernel_version&gt;
+allowing you to have several kernels in /. However this doesn't
+solve the problem for general executables.
+<P>
+<H2><A NAME="ss21.2">21.2 Ramdisk</A>
+</H2>
+
+<P>
+<P>I needed a ramdisk for testing once and couldn't find the
+instructions for setting it up. Here they are
+<P>
+<P>From: Jerry Glomph Black <CODE>black@real.com</CODE>
+<P>You specify the ramdisk size when you load the rd module, as an option.
+<P>/sbin/insmod rd rd_size=32768
+/sbin/mke2fs -m0 /dev/ram0
+mount -t ext2 /dev/ram0 /mnt 
+<P>
+<H2><A NAME="ss21.3">21.3 cscope</A>
+</H2>
+
+<P>
+<P>cscope is a code symbol navigating tool.
+<P>from Patrick O'Rourke, <CODE>orourke@missioncriticallinux.com</CODE> 
+<P>A cscope for Linux is at http://sourceforge.net/projects/cscope/
+<P>
+<HR>
+<A HREF="LVS-HOWTO-22.html">Next</A>
+<A HREF="LVS-HOWTO-20.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc21">Contents</A>
+</BODY>
+</HTML>

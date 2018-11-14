@@ -1,0 +1,358 @@
+HOWTO
+-------------------------------------------------------------------
+This document briefly explains how to use the Red Hat Piranha software to
+set up and administer a highly-available Web/FTP site. 
+
+
+Hardware/Connection Requirements
+--------------------------------
+
+LVS Nodes 
+
+You need:
+
+* A server machine that will be the pirmary LVS node. Minimally, the
+machine must have two network adapters, one connecting it to the
+Internet and the other to a private network of Web/FTP servers. For avoiding
+single points of failure (SPoFs), the node may have additional adapters.
+
+* Another machine that will be the backup LVS node. Functionally the backup
+node is optional, but it is required if you want high-availability. This
+machine also has two network adapters connecting it to the Internet and to
+a private network of Web/FTP servers. Note that the backup LVS node is
+purely a stand-by machine.
+
+
+Web/FTP Server Hosts
+
+Job requests received by the primary LVS node are redirected to a pool
+of Web/FTP server hosts. Each will have at least one network adapter
+connecting it to a private IP subnet. These may be any kind of computing
+platform or HTTPD host with one exception: the weighted least_connection
+scheduling method can examine active connections only on Linux Web/FTP
+hosts.
+
+During configuration, you will assign weights to these hosts reflecting their
+processing capacity (memory, processor speed, number of processors, etc.)
+relative to one another. Thus, you should be prepared to make accurate
+assignments.
+
+
+Software Requirements/Prerequisites
+-----------------------------------
+
+Kernel
+
+The LVS nodes require Red Hat 6.1 (or later). Red Hat 6.2 or later is
+recommended.
+
+
+Masquerading
+
+Masquerading must be enabled on the LVS nodes. You can do this in two ways:
+
+* In the /etc/sysctl.conf file, set ip_forward and ip_always_defrag to 1.
+
+* Issue these commands:
+
+	echo 1 >/proc/sys/net/ipv4/ip_forward
+	echo 1 >/proc/sys/net/ipv4/ip_always_defrag
+	ipchains -A forward -j MASQ -s n.n.n.n/24 -d 0.0.0.0/0
+  
+  n.n.n.n is the address of the private subnet of the Web/FTP hosts.
+
+
+IP Addresses
+
+During configuration, you will be asked to supply at least two floating IP
+addresses:
+
+* One will be for the NAT router. This will be a secondary address of the
+network adapter connecting the LVS nodes to the network of Web/FTP server
+hosts.
+
+* One or more will be for virtual servers: the public address(es), including
+port number(s), where incoming requests for service from Web/FTP clients
+arrive.
+
+
+Configuring the LVS Cluster
+==========================
+
+We assume you will use the Piranha GUI to set up, monitor, and administer
+your LVS cluster. The fields on its screens are explained below. If you
+prefer to use the command line tools, see the man pages: ipvsadm(8),
+lvs(8), pulse(8), nanny(8), lvs.cf(5).
+
+The piranha configuration tool is a web interface requiring Apache and PHP.
+It uses its own instance of httpd and configuration file, and a dedicated
+TCP/IP port number. To start it; execute the command:
+
+        /etc/rc.d/init.d/piranha-gui start
+
+Once running, use a web browser to connect to your server, and specify
+port number 3636 like so:
+
+        http://xxx.xxx.xxx.xxx:3636/
+
+where "xxx.xxx.xxx.xxx" is the virtual IP address of your cluster. When you
+enter the configuration screens, you will see four main sections:
+
+Controls/Monitoring. The initial tab. Used to monitor the runtime status and
+synchronize configuration on the LVS nodes. See "Control/Monitoring Tab." 
+
+Global Settings. Use to set the IP address of the primary LVS node
+and NAT routing. See "Global Setting Tab."
+
+Redundancy: Use to set the address of the backup LVS server and set the
+pulse(8) parameters. See "Redundancy Tab."
+
+Virtual Servers. Use to set service addresses and set up routing between 
+service addresses and real Web/FTP server hosts. See "Virtual Servers Tab."
+
+Piranha windows have one or more of these buttons along the bottom:
+
+	OK - Apply changes and exit.
+
+	Apply - Apply changes without exiting.
+
+	Close - Exit without applying changes.
+
+
+Controls/Monitoring
+-------------------
+
+Start
+	Click to start the pulse daemon. 
+
+Add pulse daemon to this runlevel
+	Select to start pulse at system boot. 
+
+Update information now
+	Display current LVS runtime status.
+
+Auto-update
+	Select to display LVS runtime status automatically at the specified
+	interval.
+
+
+Global Settings
+---------------
+
+Primary LVS server IP:
+	Contains the public IP address of the primary LVS node.	
+
+Primary server private IP:
+	This field may be left blank. It's purpose is to offer an alternative
+	network path for checking that the IP service on the partner box is alive
+
+
+LVS type:
+	This can be one of two differing solutions. FOS/LVS.
+	FOS provides for a system of only two servers and rudementry shared
+	data
+	LVS offers a load balance network setup over more than 2 or servers
+	though it will frequently be made up of 4 or more boxes
+
+Under LVS settings
+------------------
+Routing:
+	Can be wither NAT, Tunneling, or Direct Routing
+
+NAT Router IP:
+	Contains the floating IP address associated with the network adapter
+	connecting the node with the real server host subnet. If this
+	node fails, this address migrates to the backup LVS node.
+
+NAT Router Device:
+	Associate the floating NAT router address with the network adapter
+	name, which must be the same on both LVS nodes. 
+
+Sync tool:
+	Click to select rsh or ssh as the tool used to synchronize files
+	on the primary and backup nodes. 
+
+Under FOS settings
+------------------
+Shared data
+	This section is optional. If left blank, no actions are taken.
+	In a two node setup, it is possible to connect an external disk
+	via a shared scsi cable strung between the nodes.
+	Care should taken with both termination of the scsi chain and also
+	attention should made to what the SCSI ID's of the host adapters are
+	(eg Node 1: ID7, Node 2: ID6, shared disk ID4). Note, not all scsi
+	adators are capable of having their scsi ID numbers reset.
+
+	Because it is possible that teh disk naming on both machines may differ
+	it is necessary to provide the device name that each box sees the
+	externally shared drive as. In most cases it will probably be the same
+	however this is not guarreteed
+
+	The current shared data implementation is done via scsi reservation, which
+	is a means by which the scsi disk is locked to respond only to commands
+	from a particular scsi ID, thus guarrenting that only one machine has write
+	access to the drive. This reservation can only be broken through the use
+	of a scsi reset, so care about scsi adaptor abilities to reset the bus
+	have to be made. The locking is done by the external program scsi_reserve
+	and we encourage you to read the theory of it's operation
+	(/usr/sbin/scsi_reserve --help)
+
+Primary server disk name:
+	The device name of the external disk as the primary server sees it
+	eg /dev/sdb
+
+Redundant server disk name:
+	The device name of the external disk as the redundant server sees it
+	This may be the same or different from the primary server disk name
+	eg /dev/sdd
+
+Scsi reservation conflict:
+	This dictates what action piranha should use when an unexpected scsi
+	reservation conflict occurs during failover. Additionally it will *not*
+	wait any appreciable time between the reset and the reserve command
+	so that the greatest possibility of stealing the reservation from
+	the other node's adapter is made.
+
+Redundancy
+----------
+
+Enable redundant server
+	Select to enable failover. 
+
+Redundant server IP:
+	Contains the public IP address of the backup LVS node. 
+
+Redundant server private IP:
+	Same as the primary server private IP except that it's only offered as
+	an item if he primary server private IP has been set.
+
+Heartbeat interval (seconds):
+	Contains the number of seconds between heartbeats: the interval
+	at which the backup LVS node checks to see if the primary LVS
+	node is alive.
+
+Assume dead after (seconds):
+	If this number of seconds lapses without a response from the primary
+	LVS node, the backup node initiates failover. 
+
+
+Virtual Servers
+---------------
+
+This screen displays a row of information for each currently defined virtual
+server. Click a row to select it. The buttons on the right side of the
+screen apply to the currently selected virtual server. Click Delete to remove
+the selected virtual server.
+
+Status
+	Displays Active or Down. Click Disable to take down a selected active
+	virtual server; click Activate to enable a selected down virtual
+	server.
+Name
+	The node's name (not the hostname, although it could be).
+
+Port
+	The listen port for incoming requests for service.
+
+Protocol
+	specify tcp or udp
+
+
+Add/Edit a Virtual Server
+
+Click the Add button to create a new, undefined virtual server. Click the
+Edit button  (or double-click the row) to define a newly-created virtual server
+or change an existing virtual server. Click the Real Servers tab to set up
+routing of job requests from this virtual server to the Web/FTP server hosts
+that will process the requests (see the next section).
+
+Name:
+	Enter a descriptive name.
+
+Application:
+	Click to select HTTP or FTP.
+
+Port:
+	Enter the listening port for incoming requests.
+
+Address:
+	Enter the floating IP address where requests for service arrive.
+	If this node fails, the address and port are failed-over to the backup
+	LVS node.
+
+Device:
+	Associate the floating IP address with the network adapter that
+	connects the LVS nodes to the public network. 
+
+Re-entry Time:
+	Enter the number of seconds that a failed Web/FTP server host
+	associated with this virtual server must remain alive before it
+	will be re-added to the pool.
+
+Load monitoring tool:
+	Select the tool to use (uptime, rup, ruptime, or none) for
+        determining the workload on Web/FTP server hosts.
+
+Scheduling:
+	Select the altorithm for request routing from this virtual server
+	to the Web/FTP server hosts that will perform the services:
+
+	Select Weighted least-connections
+	Assign more jobs to hosts that are least busy relative to their
+	processing capacity.
+
+	Weighted round robin
+	Assign more jobs to hosts with greater processing capacity.
+	
+	Round robin
+	Distribute jobs equally among the hosts. 
+
+Edit Scripts:
+	This section allows you to specify a send/expect string sequence
+	for verifying an IP service is functional. Only one send and/or
+	expect sequence is allowed, and can only contain printable
+	characters plus (\n, \r, \t, and/or \')
+
+Persistence:
+	If greater than zero, enables persistent connection support and
+	specifies a timeout value.
+
+Persistence Network Mask:
+	If persistence is enabled, this is a netmask to apply to routing
+	rules for enabling subnets for persistence.
+
+
+Real Servers
+
+This screen displays a row of information for each currently defined Web/FTP
+server. Click a row to select it. The buttons on the right side of the
+screen apply to the currently selected server host. Click Delete to remove
+the selected host.
+
+Status
+	Displays Active or Down. Click Disable to deactivate a selected server 
+	host; click Activate to enable a selected down host. 
+
+Name
+	The server's name (not the hostname, although it could).
+
+Address:
+
+	The server's IP address.
+
+Add/Edit a Real Server
+
+Click the Add button to create an association with a new, undefined Web/server
+host. Click the Edit button  (or double-click the row) to define a new
+host or change an existing one.
+
+Name:
+	Enter a descriptive name.
+
+Address:
+	Enter the Web/FTP server's IP address. The listening port will be
+	the one specified for the associated virtual server. 
+
+Weight:
+	Assign an integer to indicate this host's processing capacity
+	relative to that of other hosts in the pool.

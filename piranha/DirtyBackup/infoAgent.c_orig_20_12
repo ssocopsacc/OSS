@@ -1,0 +1,1990 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <signal.h>
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <net/if.h>
+#include <net/if_arp.h>
+//#include <net/netopt.h>
+#include <netinet/tcp.h>
+#include <sys/ioctl.h>
+#include <linux/sockios.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/sem.h>
+#include <sys/queue.h>
+#include <asm/socket.h>
+#include <errno.h>
+#include <pthread.h>
+#include "lvsconfig.h"
+#include <stdbool.h>
+#include <sys/file.h>
+
+/****************************************************************************************
+  infoagent wil be started on active and passive load balancer by the  
+  pulse agent it self.In case of Failover handling this agent will be restarted.
+
+  For real server (VPN Gateway), this will be by deafult running in as the background 
+  process.
+ ****************************************************************************************/
+#define CNF_FILE "/etc/sysconfig/ha/lvs.cf"
+#define CNFSCRIPT_FILE "/etc/sysconfig/ha/getactive.sh"
+#define UDPAGENTPORT 939
+#define MAX_NUMBER_OF_REAL_SERVERS 12
+#define ifaddr(x) (*(struct in_addr *) &x->ifr_addr.sa_data[sizeof sa.sin_port])
+#define SHMKEY_NODEINFO ((key_t)8989)
+
+#define SYNC_TIME "SYNC_TIME"
+
+#define PULSE_RUNNING 2
+#define FILESYNC_DAEMON_RUNNING 4
+#define VPN_SERVER_RUNNING 8
+#define NTP_SERVICES_RUNNING 16
+
+#define SET_SOCKET_BLOCKING 1
+#define SET_SOCKET_NONBLOCKING 0
+#define INFOAGENT_SERVICE_PORT 939
+#define INFOAGENT_SERVICE_TIMEOUT_FOR_CONNECTION 2*60 
+#define MAX_NUMBER_OF_REAL_SERVERS 12
+#define FILESYNC_CONFIGURATION_FILE "/home/fes/filesync.conf"
+#define FILESYNC_DAEMON_RESTART	"FILESYNC_RESTART" 
+#define MAX_LISTEN_BACKLOG_LIMIT 12
+#define COMMAND_DAEMON_PIPE_NAME "/home/fes/commDemon.txt" 
+#define REAL_VPN_SERVER 2
+#define FES_SERVER_RESTART "FES_RESTART"
+#define APACHE_SERVER_RESTART "HTTPD_RESTART"
+#define PULSE_RESTART "PULSE_RESTART"
+#define STANDBY_LOAD_BALANCER 1
+#define STANDBY_LOAB_BALANCER_AND_VPN_SERVER 3
+#define PULSE_SERVICE_RESTART "PULSE_RESTART"
+#define ACTIVE_LOAD_BALANCER 0
+#define COMMAND_DAEMON_PIPE_NAME "/home/fes/commDemon.txt"
+
+#define INFOAGENT_LOCK_FILE "infoagent.lock"
+#define INFOAGENT_PID_FILE "infoagent.pid"
+
+#define IPADRRESS_MAX_LEN 32
+
+
+#define PRINT_AGENT 1
+
+#ifdef PRINT_AGENT
+
+#define print_agent(filename, fmt, args...)	\
+	do { \
+		FILE *file_for_debug;	\
+		time_t time_for_debug;	\
+		char char_time_for_debug[25];	\
+		char finalFilename[256];	\
+		time_for_debug=time(NULL);	\
+		strncpy(char_time_for_debug,ctime(&time_for_debug),24);\
+		char_time_for_debug[24]='\0';	\
+		sprintf(finalFilename,"/home/fes/%s",filename);	\
+		file_for_debug = fopen(finalFilename, "a+"); \
+		fprintf(file_for_debug, "%s  pid:%d " fmt,char_time_for_debug, getpid(),##args);\
+		fprintf(file_for_debug, "\n");\
+		fclose(file_for_debug);\
+		fflush(file_for_debug);}while(0)
+#else
+#define print_agent(filename, fmt, args...) ;
+#endif
+
+//#define ADD_INTO_REMOTE_LIST_OF_CONFIGURATION(tmpptr) TAILQ_INSERT_TAIL(&RemoteList,tmpptr,entries)
+
+static volatile int g_CondVar = 0;
+static  int g_NumNodes = 0;
+static int lockFd = -1;
+static int shmSem = 0;
+int getcmdvals(char *cmdstr,char* outstr,int bytesToRead);
+
+static int ListenAgentSock = 0;
+bool backupActive = false;
+static short wait_ticks = 5; /*Number of times backup node will skip active message.*/
+
+typedef struct RealServers{
+	char IPaddress[IPADRRESS_MAX_LEN];
+	int type;
+	char IntfName[8];
+	int SyncState;
+	char ActiveIPAddress[IPADRRESS_MAX_LEN];
+	char VirtualIPAddress[IPADRRESS_MAX_LEN];
+	struct lvsVirtualServer *Real_serverlist;
+}REALSERVER;
+
+enum commandval{
+	STARTSERVICE=1,
+	STOPSERVICE,
+	RELOADSERVICE,
+	REMOTE_STATUS,
+	FES_RESTART,
+	RESP_STARTSERVICE=20,
+	RESP_STOPSERVICE,
+	RESP_RELOADSERVICE,
+	RESP_FESRESTART,
+	RESP_IGNORED=0,
+	RESP_RESEND=41
+};
+
+typedef struct serviceCommand{
+	int service;
+	int command;
+	int relay;
+}CONFCOMMAND;
+
+typedef struct ActiveLBData{
+
+	char ActivePrivateIP[IPADRRESS_MAX_LEN];
+	char BackupPrivateIP[IPADRRESS_MAX_LEN];
+	char ClusterVirtualIP[IPADRRESS_MAX_LEN];
+	int RealServerCount;
+	char IntfName[8];
+	char RealServer[MAX_NUMBER_OF_REAL_SERVERS*40];
+	char current_time[128];
+	char zonename[256]; 
+}CONFIG_DATA;
+
+pthread_t activeListener;
+
+typedef struct ConfSharedStruct
+{
+
+	unsigned char SharedHash[32];
+	char ResourceIP[IPADRRESS_MAX_LEN];
+	char HostIP[IPADRRESS_MAX_LEN];//self Ip
+	int NodeType;
+
+}CONF_STRUCT;
+
+struct __statusNode {
+
+	int  NodeType;
+	int  status_bit;
+	char nodeIP[IPADRRESS_MAX_LEN];
+	char cpu[10];
+	char mem[10];
+	char secMem[10];
+	char sysUpTime[24];
+}__attribute__((__packed__));
+
+typedef  struct __statusNode STATUSNODE;
+
+struct serversList
+{
+	char IpAddress[IPADRRESS_MAX_LEN];
+	TAILQ_ENTRY(serversList) entries;
+};
+////////////////////////////////////////////////////FUNCTION DECLARATIONS //////////////////////////
+bool FillNodeInfoIntoSharedMemory(REALSERVER *SelfSharedInfo);
+bool LaunchFileSyncDaemon();
+bool StartListner();
+bool SendCommandToDaemon(char *command);
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+pthread_mutex_t g_NodesStatPtr_mutex;
+
+STATUSNODE* g_NodesStatPtr = NULL;
+
+struct sembuf lsem_lock = { 0, -1, 0 };
+struct sembuf lsem_unlock = { 0, 1, 0 };
+
+int sem_get_lock(int sid)
+{
+	return (semop(sid, &lsem_lock, 1));
+}
+
+int sem_set_unlock(int sid)
+{
+
+	return (semop(sid, &lsem_unlock, 1));
+}
+
+int create_sem()
+{
+	union semun {
+		int      val;
+		struct semid_ds *buf;
+		ushort    *array;
+	} semctl_arg;
+
+	int semid;
+	system ("ipcrm -S 0x0f8d8989 > /dev/null 2>&1");
+	semid=semget(0x0f8d8989,1,IPC_CREAT|IPC_EXCL|0660);
+	if(semid !=-1)
+	{
+		semctl_arg.val =1;
+		if(semctl(semid,0,SETVAL,semctl_arg)< 0)
+		{
+			print_agent("infosync.log","CreateNodeSemaPhore Failed.");
+			semctl(semid,1,IPC_RMID,0);
+			return -1;
+		}
+
+	}
+	else
+	{
+		print_agent("infosync.log","CreateNodeSemaPhore Failed, Checking For Existing One.");
+		if(errno == EEXIST)
+		{
+			semid=semget(0x0f8d8989,1,IPC_CREAT|0660);
+			semctl(semid,1,IPC_RMID,0);
+			semid=semget(0x0f8d8989,1,IPC_CREAT|IPC_EXCL|0660);
+			if(semid !=-1)
+			{
+				print_agent("infosync.log","CreateNodeSemaPhore Created Successfully after Deleting Existing.");
+				semctl_arg.val =1;
+				if(semctl(semid,0,SETVAL,semctl_arg)< 0)
+				{
+					semctl(semid,1,IPC_RMID,0);
+					return -1;
+				}
+			}
+		}
+		else{
+			print_agent("infosync.log","CreateNodeSemaPhore Failed,Error No %d",errno);
+			return -1;
+		}					
+	}
+	return semid;
+}
+
+TAILQ_HEAD( tailqhead, serversList) RemoteList;
+TAILQ_HEAD( tailqhead1, serversList) LocalList;
+
+
+int getcmdvals(char *cmdstr,char* outstr,int bytesToRead)
+{
+	FILE* fp;
+	int readBytes = -1;	
+	print_agent("infosync.log","Opening Pipe To Run Command %s",cmdstr);
+	fp = popen(cmdstr,"r");
+	if(fp!=NULL)
+	{
+		readBytes = fread(outstr,sizeof(char),bytesToRead,fp);
+		if(readBytes <= 0)
+		{
+			print_agent("infosync.log","Error Occured While Reading Command Output.");
+			pclose(fp);
+			return 1;
+		}
+		outstr[readBytes] = '\0';
+		pclose(fp);
+		return 0;
+	}
+	return 1;
+}
+
+//false to Non-block
+int setSockBlockNonBlock(int sock,int isNonBlock)
+{
+	long arg;
+
+	if((arg=fcntl(sock,F_GETFL,NULL)) < 0)
+	{
+		print_agent("infosync.log","Get Socket Flags Failed.");
+		return -1;
+	}
+	if(!isNonBlock)
+	{
+		arg = arg | O_NONBLOCK;
+		if(fcntl(sock,F_SETFL,arg)<0)
+		{
+			print_agent("infosync.log","Set Socket Non Blocking Failed.");
+			return -1;
+		}
+	}
+	else
+	{
+		arg = arg & (~O_NONBLOCK);
+		if(fcntl(sock,F_SETFL,arg)<0)
+		{
+			print_agent("infosync.log","Set Socket Blocking Failed.");
+			return -1;
+		}
+	}
+	return sock;
+}
+
+int RecvData(int sockfd,char *buffer,int rbuff_size,int *data_len)
+{
+	*data_len = 0;
+	int read_len = 0;	
+
+	while(1){
+		read_len += read(sockfd,buffer+read_len,rbuff_size);
+		if(read_len == 0)
+		{
+			print_agent("infosync.log","Peer End Closed Connection.");
+			*data_len = 0;
+			break;
+		}
+		else if(read_len < 1)
+		{
+			//if ((errno != EINTR) && (errno != EAGAIN) && (errno != EWOULDBLOCK))
+			//	break;
+			//else	
+			//	continue;
+			print_agent("infosync.log","Peer End Read Failed Errno %d ErrString %s",errno,strerror(errno));
+			*data_len = -1;
+			break;			
+		}
+		else
+			break;
+	}
+	*data_len = read_len;	
+	return *data_len;
+}
+
+int connect_process(int sockfd,struct sockaddr* destSock)
+{
+	int rVal=-1;
+	fd_set writeEventSet;
+	int valOpt=0;
+	struct timeval tv;
+	socklen_t sockLen;
+	rVal=connect(sockfd,(struct sockaddr*)destSock, sizeof(*destSock));
+
+	if(rVal<0)
+	{
+		if(errno==EINPROGRESS)
+		{
+			int uTimeLimit=35;
+			time_t uTimeout;
+			uTimeout=time(NULL);
+			uTimeout=uTimeout+uTimeLimit;
+			while(1)
+			{
+				tv.tv_sec=uTimeLimit;
+				tv.tv_usec=0;
+				FD_ZERO(&writeEventSet);
+				FD_SET(sockfd,&writeEventSet);
+				rVal=select(sockfd+1,NULL,&writeEventSet,NULL,&tv);
+				if(rVal==0)
+				{
+					return -1;
+				}
+				else if( rVal >0){
+					sockLen=sizeof(int);
+					if(getsockopt(sockfd,SOL_SOCKET,SO_ERROR,(void *)&valOpt,&sockLen)<0)
+					{
+						return -1;
+					}
+					if(valOpt)
+					{
+						return -1;
+					}
+					break;
+				}
+				else
+				{
+					if(errno==EINTR)
+					{
+						time_t uCurrentTime=time(NULL);
+						if(uCurrentTime >=uTimeout)
+							return -1;
+						else
+							uTimeLimit=uTimeLimit-uCurrentTime;
+					}
+					else
+						return -1;
+				}
+			}
+		}
+		else
+		{
+			return -1;
+		}
+	}
+	return 0;
+
+
+}
+#if 1
+void WriteSynConfFile(char *serverList)
+{
+	int i=0;
+	char fileStr[4096] = {0};
+	char command[5012] = {0};
+
+	print_agent("infosync.log","Updating FileSync Configuration File.\n");
+
+	char files[19][256]={"/etc/sysconfig/ha/lvs.cf",
+		"/home/fes/fescommon/",
+		"/var/lib/mysql/fesdb",
+		"/var/lib/mysql/mysql/",
+		"/home/fes/public/portal/realms/default/images/",
+		"/home/fes/public/portal/act/apptab.html",
+		"/home/fes/public/portal/act/loginPage.htm",
+		"/home/fes/public/portal/act/logoutclient.html",
+		"/etc/httpd/conf/httpd.conf",
+		"/etc/logrotate.d/ves",
+		"/home/fes/public/verinfo.js",
+		"/home/fes/public/tseclientinfo.js",
+		"/home/fes/.byPassSiteList",
+		"/home/fes/localmail.txt",
+		"/home/fes/csrmail.txt",
+		"/home/fes/resetpassmail.txt",
+		"/home/fes/ntp_command",
+		"/home/fes/logs/",
+		"/home/fes/vip_feature_Status.txt"
+	};
+
+	sprintf(fileStr,"FILES=%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s",&files[0][0],&files[1][0],&files[2][0],&files[3][0],&files[4][0],&files[5][0],&files[6][0],&files[7][0],&files[8][0],&files[9][0],&files[10][0],&files[11][0],&files[12][0],&files[13][0],&files[14][0],&files[15][0],&files[16][0],&files[17][0],&files[18][0]);
+
+	print_agent("infosync.log","Files Added For Sync %s",fileStr);
+
+	sprintf(command,"echo \"%s\" > /home/fes/filesync.conf",fileStr);
+	system(command);
+
+	print_agent("infosync.log","Real Servers Added For Sync %s",serverList);
+
+	sprintf(command,"echo \"%s\" >>/home/fes/filesync.conf",serverList);
+	system(command);
+
+	print_agent("infosync.log","After Updating Config file\n");
+
+	while(serverList[i])
+	{
+		if(serverList[i] == 44)
+			serverList[i] = 32;
+		i++;
+	}
+
+}
+#endif
+
+bool FillLocalClusterConf()
+{
+	char parseCMDServer[]="cat /home/fes/filesync.conf |awk -F = 'BEGIN{OUTPUTSTR=0;} {if($1 == MATCHSTR ){OUTPUTSTR=$2}} END{print OUTPUTSTR}' MATCHSTR=\"SERVERS\" 2>&1";
+	char resultStr[MAX_NUMBER_OF_REAL_SERVERS*40] = {0};
+	//struct serversList* tmpptr = NULL; 	
+	char *tmptok = NULL;	
+	//tmpptr = (struct serversList*)malloc(sizeof( struct serversList));
+
+	//if(tmpptr == NULL)
+	//{
+	//	print_agent("infosync.log","FillLocalClusterConf :Failed To allocate Memory.");
+	//	return false;
+	//}	
+	if(!getcmdvals(parseCMDServer,resultStr,MAX_NUMBER_OF_REAL_SERVERS*40))
+	{
+		if(strstr(resultStr,"cannot open file")!=NULL)
+		{
+			print_agent("infosync.log","FillLocalClusterConf :Error in opening filesync config file\n");
+			return false;
+		}
+		else
+		{
+			tmptok=strtok(resultStr,",");
+			do{
+				struct serversList* tmpptr = (struct serversList*)malloc(sizeof( struct serversList));
+				if(tmpptr!=NULL)
+				{
+					memset(tmpptr,0,sizeof(struct serversList));
+					sprintf(tmpptr->IpAddress,"%s",tmptok);
+
+					if(tmpptr->IpAddress[strlen(tmpptr->IpAddress)-1]=='\n')
+						tmpptr->IpAddress[strlen(tmpptr->IpAddress)-1]='\0';
+					if(tmpptr->IpAddress[strlen(tmpptr->IpAddress)]==0)
+						tmpptr->IpAddress[strlen(tmpptr->IpAddress)]='\0';
+
+					TAILQ_INSERT_TAIL(&LocalList,tmpptr,entries);
+
+				}
+				else
+				{
+					print_agent("infosync.log","FillLocalClusterConf :Failed To allocate Memory.");
+					return false;
+				}
+				tmptok=strtok(NULL,",");
+			} while(tmptok!=NULL);	
+		}
+	}
+	else
+	{
+		print_agent("infosync.log","FillLocalClusterConf :Failed To run Command To Parse filesync.conf.");
+		return false;
+	}
+	return true;		
+}
+
+bool CompareClusterConf(int *updateConfigFile)
+{
+	struct serversList* tmpptrI;
+	struct serversList* tmpptrJ;
+	struct serversList* tmpptrvalI;
+	struct serversList* tmpptrvalJ;
+
+	for(tmpptrI=TAILQ_FIRST(&RemoteList);tmpptrI!= NULL;tmpptrI=tmpptrvalI)
+	{
+		tmpptrvalI=TAILQ_NEXT(tmpptrI,entries);
+
+		for(tmpptrJ=TAILQ_FIRST(&LocalList);tmpptrJ!= NULL;tmpptrJ=tmpptrvalJ)
+		{
+			tmpptrvalJ=TAILQ_NEXT(tmpptrJ,entries);
+			if(strcmp(tmpptrI->IpAddress,tmpptrJ->IpAddress)==0)
+			{
+				print_agent("infosync.log","CompareClusterConf Server Matches in Both Lists %s",tmpptrI->IpAddress);
+				TAILQ_REMOVE(&RemoteList,tmpptrI,entries);
+				free(tmpptrI);
+				TAILQ_REMOVE(&LocalList,tmpptrJ,entries);
+				free(tmpptrJ);
+
+			}
+		}
+	}
+
+
+	if(!TAILQ_EMPTY(&RemoteList))
+	{
+		*updateConfigFile = 1;
+		struct serversList* tmpptr;
+		TAILQ_FOREACH(tmpptr,&RemoteList,entries)
+		{
+			TAILQ_REMOVE(&RemoteList,tmpptr,entries);
+			print_agent("infosync.log","CompareClusterConf Remaining Entries in Remote %s\n",tmpptr->IpAddress);
+			free(tmpptr);
+		}
+
+	}
+
+	if(!TAILQ_EMPTY(&LocalList))
+	{
+		*updateConfigFile = 1;
+		struct serversList* tmpptr;
+		TAILQ_FOREACH(tmpptr,&LocalList,entries)
+		{
+			TAILQ_REMOVE(&LocalList,tmpptr,entries);
+			print_agent("infosync.log","CompareClusterConf Remaining Entries in Local %s\n",tmpptr->IpAddress);
+			free(tmpptr);
+		}
+
+	}
+
+	return true;
+}
+
+void FreeRemoteListMemory()
+{
+	//struct serversList* tmpptr = NULL;
+	/* Delete. */
+	int delEntryCount = 0;
+	print_agent("infosync.log","Deleting Remaining Entries in Remote");
+	while(RemoteList.tqh_first != NULL)
+	{
+		delEntryCount++;
+		TAILQ_REMOVE(&RemoteList, RemoteList.tqh_first, entries);
+	}
+	print_agent("infosync.log","Total Number of deleted Entries %d",delEntryCount);
+	/*if(!TAILQ_EMPTY(&RemoteList))
+	  {
+	  struct serversList* tmpptr;
+	  TAILQ_FOREACH(tmpptr,&RemoteList,entries)
+	  {
+	  TAILQ_REMOVE(&RemoteList,tmpptr,entries);
+	  print_agent("infosync.log","CompareClusterConf Remaining Entries in Remote %s\n",tmpptr->IpAddress);
+	  free(tmpptr);
+	  }
+
+	  }*/
+}
+
+bool UpdateFileSynConf(CONFIG_DATA *clusterConf,int nodeType,int *isModified)
+{
+	char* tmptok=NULL;
+	struct stat st;
+	char * serverListptr=NULL;
+	bool ifCheckUpdate = false;	
+
+	struct serversList* tmpptr1=NULL;
+	struct serversList* tmpptr2=NULL;
+
+	char realServersList[MAX_NUMBER_OF_REAL_SERVERS*40] = {0};
+
+	serverListptr = (char*)malloc(clusterConf->RealServerCount);
+
+	/*isModified is NULL When Node Is ACTIVE Load Balancer OR Writing FileSync Conf File For First Time in any Case..*/	
+	ifCheckUpdate = false;
+	if(nodeType != ACTIVE_LOAD_BALANCER)
+	{
+		if(isModified != NULL)
+			ifCheckUpdate = true;
+	}
+
+	if(ifCheckUpdate){
+		tmpptr1 = (struct serversList*)malloc(sizeof(struct serversList));
+		tmpptr2 = (struct serversList*)malloc(sizeof(struct serversList));
+	}
+
+	if(serverListptr!=NULL)
+	{
+		sprintf(serverListptr,"%s",clusterConf->RealServer);
+	}
+	else
+		return false;
+
+	if(ifCheckUpdate){
+
+		TAILQ_INIT(&RemoteList);
+		TAILQ_INIT(&LocalList);
+
+		if((tmpptr1!=NULL) && (tmpptr2!=NULL))
+		{
+			strcpy(tmpptr1->IpAddress,clusterConf->ActivePrivateIP);
+			strcpy(tmpptr2->IpAddress,clusterConf->BackupPrivateIP);
+			tmpptr1->IpAddress[strlen(tmpptr1->IpAddress)]='\0';
+			tmpptr2->IpAddress[strlen(tmpptr2->IpAddress)]='\0';
+			TAILQ_INSERT_TAIL(&RemoteList,tmpptr1,entries);
+			TAILQ_INSERT_TAIL(&RemoteList,tmpptr2,entries);
+		}
+	}
+	sprintf(realServersList,"SERVERS=%s,%s",clusterConf->ActivePrivateIP,clusterConf->BackupPrivateIP);	
+
+	tmptok=strtok(serverListptr,",");
+
+	do{
+		if((strcmp(tmptok,clusterConf->ActivePrivateIP)!= 0) && (strcmp(tmptok,clusterConf->BackupPrivateIP) != 0))
+		{
+
+			if(ifCheckUpdate){
+				struct serversList* tmpptr = (struct serversList*)malloc(sizeof( struct serversList));
+				/*Fill Remote List for comparision.*/
+				if(tmpptr){
+					memset(tmpptr,0,sizeof(struct serversList));
+					sprintf(tmpptr->IpAddress,"%s",tmptok);
+
+					if(tmpptr->IpAddress[strlen(tmpptr->IpAddress)-1]=='\n')
+						tmpptr->IpAddress[strlen(tmpptr->IpAddress)-1]='\0';
+					if(tmpptr->IpAddress[strlen(tmpptr->IpAddress)]==0)
+						tmpptr->IpAddress[strlen(tmpptr->IpAddress)]='\0';
+
+					//ADD_INTO_REMOTE_LIST_OF_CONFIGURATION(tmpptr);
+					TAILQ_INSERT_TAIL(&RemoteList,tmpptr,entries);
+				}
+			}	
+			strcat(realServersList,",");
+			strcat(realServersList,tmptok);
+		}
+		tmptok=strtok(NULL,",");	
+	}while(tmptok !=NULL);
+
+	if(!ifCheckUpdate && (stat(FILESYNC_CONFIGURATION_FILE,&st)!= 0))
+	{
+		print_agent("infosync.log","Writing FileSync Configuration File.");
+		WriteSynConfFile(realServersList);
+
+		//FreeRemoteListMemory();
+	}
+	else
+	{
+		*isModified = 0;
+		if(!FillLocalClusterConf())
+		{
+			if(stat(FILESYNC_CONFIGURATION_FILE,&st)!= 0)
+			{
+				print_agent("infosync.log","Filling Local Cluster Information Failed. File Doesn't Exist");
+				return false;
+			}
+			print_agent("infosync.log","Filling Local Cluster Information From Conf File Failed.");
+			return false;
+		}	
+		/*Test If Any Changes Happened in Cluster Configuration*/
+		int updateConfigFile = -1;	
+		if(!CompareClusterConf(&updateConfigFile))
+		{
+			print_agent("infosync.log","Comparsion Failed.Failed To comapre Local COnf To Remote Conf.");
+			return false;
+		}
+		else if(updateConfigFile == 1)
+		{
+			print_agent("infosync.log","Comparsion Found Some Changes In Cluster Configuration");
+			*isModified = 1;
+			WriteSynConfFile(realServersList);
+		}
+		else
+			print_agent("infosync.log","Comparsion Found No Changes In Cluster Configuration");
+
+	}	
+	if(serverListptr!= NULL)
+		free(serverListptr);
+
+
+	return true;
+}
+
+struct in_addr  GetInterfaceInfo(char * interfaceName)
+{
+	struct in_addr bRetVal={0};
+	int sockfd;
+	struct ifreq ifr[5],*pIfr;
+	struct ifconf ifc;
+	struct sockaddr_in sa;
+
+
+	sockfd = socket(AF_INET, SOCK_STREAM,0);
+
+	if (sockfd !=-1)
+	{
+		ifc.ifc_req = NULL;
+		ifc.ifc_req = ifr;
+
+		ifc.ifc_len = sizeof(ifr);
+
+		if (ioctl(sockfd, SIOCGIFCONF, &ifc))
+			return bRetVal;
+
+		pIfr = ifc.ifc_req;
+
+		for (; (char *) pIfr < (char *) ifc.ifc_req + ifc.ifc_len; ++pIfr)
+		{
+			if(strcmp(pIfr->ifr_name,interfaceName)== 0)
+			{	close(sockfd);
+				bRetVal=ifaddr(pIfr);
+				return bRetVal;
+			}
+			if (pIfr->ifr_addr.sa_data == (pIfr + 1)->ifr_addr.sa_data)
+			{
+				continue;
+			}
+			if (ioctl(sockfd, SIOCGIFFLAGS, pIfr))
+			{
+				continue;
+			}
+
+
+		}
+		close(sockfd);
+	}
+
+	return bRetVal;
+}
+
+
+int setSockreuse(int sockfd)
+{
+	int on = 1;
+	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR , (char*)&on, sizeof(on)) == -1) 
+	{
+		print_agent("infosync.log","Set Socket Option Failed.");
+		return -1;
+	}
+	else
+		return 0;
+}
+
+void *startCommandServer(void * arg){
+
+	struct sockaddr_in clientSockAddr;
+	socklen_t sockLen = sizeof(struct sockaddr_in);
+
+	if(!StartListner())
+	{
+		print_agent("infosync.log","Starting Active Load Balancer Listner Failed.");
+		return NULL;
+	}
+
+	CONFCOMMAND buffer;
+	int clientSock = -1;	
+	int data_len;
+
+	int writtenBytes = -1;	
+
+	while(!g_CondVar)
+	{
+		clientSock = accept(ListenAgentSock,(struct sockaddr*)&clientSockAddr,&sockLen);
+		if(clientSock <= 0)
+		{
+			print_agent("infosync.log","ActiveListner :Accept Failed. Thread Exiting.");
+			return NULL;	
+		}
+
+		memset(&buffer,0,sizeof(CONFCOMMAND));
+
+		//setSockBlockNonBlock(clientSock,SET_SOCKET_NONBLOCKING);	
+		RecvData(clientSock,(char*)&buffer,sizeof(CONFCOMMAND),&data_len);
+		//setSockBlockNonBlock(clientSock,SET_SOCKET_BLOCKING);	
+
+		if(data_len <= 0)
+		{
+			print_agent("infosync.log","ActiveListner :Read Data Failed");
+			continue;
+		}
+		if(data_len == sizeof(CONFCOMMAND))
+		{
+			print_agent("infosync.log","Active LoadBalancer Recieved Command %x Service %x\n",buffer.command,buffer.service);
+
+			if(buffer.service == 0x81)
+			{
+				char *bufferWrite = (char *)malloc(sizeof(CONFCOMMAND)+(sizeof(STATUSNODE)*g_NumNodes));
+
+				CONFCOMMAND *respCommand = (CONFCOMMAND *)bufferWrite;
+				STATUSNODE *respStat = (STATUSNODE *)(bufferWrite + sizeof(CONFCOMMAND));
+
+				respCommand->service = 0x81;
+				respCommand->command = g_NumNodes;
+
+				print_agent("infosync.log","Sending Status Data of %d nodes.\n",g_NumNodes);
+
+				pthread_mutex_lock(&g_NodesStatPtr_mutex);
+				memcpy(respStat,g_NodesStatPtr,(sizeof(STATUSNODE)*g_NumNodes));
+				pthread_mutex_unlock(&g_NodesStatPtr_mutex);
+
+				print_agent("infosync.log","%s %s\n",respStat->nodeIP,respStat->secMem);
+
+				writtenBytes = write(clientSock,respCommand,sizeof(CONFCOMMAND)+(sizeof(STATUSNODE)*g_NumNodes));
+				if(writtenBytes <= 0)
+				{
+					if(errno == EPIPE)
+						print_agent("infosync.log","Active LB: Failed to Send Status Data To Client,\
+								Client Closed Connection.");
+					else
+						print_agent("infosync.log","Active LB: Failed to Send Status Data To Client");
+				}
+				if(writtenBytes == sizeof(CONFCOMMAND)+(sizeof(STATUSNODE)*g_NumNodes))
+				{
+					print_agent("infosync.log","Active LB: Written Status Data Successfully.");
+				}	
+				close(clientSock);
+				free(bufferWrite);
+			}
+			else if(buffer.service == ACTIVE_LOAD_BALANCER)
+			{
+				print_agent("infosync.log","Active LB: Other Gateway is also running Active Server");
+				if(backupActive)
+				{
+					if(wait_ticks < 0){
+						print_agent("infosync.log","Active LB: I am a backup node running active ..Lets Go to Backup Mode.");
+						if(!SendCommandToDaemon(PULSE_RESTART))
+						{
+							print_agent("infosync.log","Active LB: Failed to send Pulse Restart command to daemon");
+						}
+						else
+							exit(0);
+					}
+					else
+						wait_ticks = wait_ticks -1;	
+				}			
+			}
+		}
+		else{
+			CONFCOMMAND ignCmd;
+			ignCmd.service	= 0x80;
+			ignCmd.command = RESP_IGNORED;
+			ignCmd.relay = 0x0;
+			write(clientSock,&ignCmd,sizeof(CONFCOMMAND));
+			close(clientSock);
+		}
+	}
+
+	close(ListenAgentSock);
+	pthread_exit(NULL);
+}
+
+void  makeBackupFescommon(void * arg)
+{
+
+	while(!g_CondVar)
+	{
+		system("touch /home/fes/fescommon/*");
+		system("touch /var/lib/mysql/fesdb/*");
+		system("touch /var/lib/mysql/mysql/*");
+		system("touch /etc/sysconfig/ha/lvs.cf");
+		sleep(180);
+
+	}
+
+}
+
+int getNodeStatusDetail(STATUSNODE* node,int nodeType,char *IPaddrs)
+{
+	char result[4] = {0};
+	char bigResult[50] = {0};
+	int retstat = -1;
+	STATUSNODE* selfStat = node;
+
+	char upt_cmd[] ="uptime| awk -F , 'BEGIN{search=\" \";timesval=0;} {k=split($0,array1,\",\"); n=split($1,array,search); if(k < 6){ if(n<4){printf(\"%s hrs \",array[3])}else{printf(\"%s %s \",array[3],array[4]);}}else {j=split($2,array3,\" \"); if(j >1){printf(\"%s days,%s mins\",array[3],array3[1]);}else{ printf(\"%s days,%s hrs\",array[3],$2);}} }'";
+
+	char cpu_cmd[] = "sar -u 1 1 | awk '{if ($1==\"Average:\"){print $8}}'";
+
+	char hdd_cmd[] = "df -k | awk '{ n=split($0,array,\" \"); if((length(array[n])== 1)) { print array[--n] } }'";
+
+	char mem_cmd[] = "free | awk 'BEGIN { MODIFY_Conuter=0 } {if( MODIFY_Conuter == 2 ){ y=($3/($3+$4))*100; print y;MODIFY_Conuter++; } else {MODIFY_Conuter++;} }'";
+
+	memset(selfStat,0,sizeof(STATUSNODE));
+	selfStat->status_bit = 0;
+	memcpy(selfStat->nodeIP,IPaddrs,sizeof(selfStat->nodeIP));
+	selfStat->NodeType = nodeType;
+
+	print_agent("infosync.log","Writing data as node type %d \n",selfStat->NodeType);
+
+	if(nodeType != REAL_VPN_SERVER)
+	{
+		memset(result,0,sizeof(result));
+		if(!getcmdvals("service pulse status > /dev/null 2>&1 ; echo $?",result,sizeof(result)))
+		{
+			retstat = atoi(result);
+			if(!retstat)
+			{		
+				print_agent("infosync.log","Pulse service Running.");
+				selfStat->status_bit = selfStat->status_bit | PULSE_RUNNING;
+			}
+			else
+			{
+				print_agent("infosync.log","GetNodeStatus :Pulse Not Running.");
+
+			}	
+		}
+		else
+		{
+			print_agent("infosync.log","GetNodeStatus :Pulse Status fetch command failed.");
+		}
+	}
+
+	memset(result,0,sizeof(result));
+	if(!getcmdvals("pgrep FileSync > /dev/null 2>&1 ; echo $?",result,sizeof(result)))
+	{
+		retstat = atoi(result);
+		if(!retstat)
+		{	
+			print_agent("infosync.log","FileSync service Running.");
+			selfStat->status_bit = selfStat->status_bit | FILESYNC_DAEMON_RUNNING;
+		}
+		else
+		{
+			print_agent("infosync.log","GetNodeStatus :FileSync Daemon Not Running");
+		}	
+	}
+	else
+	{
+		print_agent("infosync.log","GetNodeStatus :FileSync Status fetch command failed.");
+	}
+
+	memset(result,0,sizeof(result));
+	if(!getcmdvals("pgrep fesgeneric > /dev/null 2>&1 ; echo $?",result,sizeof(result)))
+	{
+		retstat=atoi(result);
+		memset(result,0,sizeof(result));
+		if(!getcmdvals("pgrep progeneric > /dev/null 2>&1 ; echo $?",result,sizeof(result)))
+		{
+			retstat = atoi(result);
+			if(!retstat)
+			{
+				print_agent("infosync.log","FES service Running.");
+				selfStat->status_bit = selfStat->status_bit | VPN_SERVER_RUNNING; 
+			}
+			else
+			{
+				print_agent("infosync.log","GetNodeStatus :VPN Server Not Running");
+			}
+		}
+		else
+			print_agent("infosync.log","GetNodeStatus :VPN Server Status fetch command failed.");
+	}
+	else
+	{
+		print_agent("infosync.log","GetNodeStatus :VPN Server Status fetch command failed.");
+	}
+
+	memset(bigResult,0,sizeof(bigResult));
+	if(!getcmdvals(upt_cmd,bigResult,sizeof(bigResult)))
+	{
+		if(strlen(bigResult) <= sizeof(selfStat->sysUpTime))
+			sprintf(selfStat->sysUpTime,"%s",bigResult);
+		else
+			sprintf(selfStat->sysUpTime,"%s","retriving..");
+	}
+	else{
+		print_agent("infosync.log","GetNodeStatus :Failed To Read UPtime Status.");
+		sprintf(selfStat->sysUpTime,"%s","retriving..");
+	}
+
+	memset(bigResult,0,sizeof(bigResult));
+	if(!getcmdvals(cpu_cmd,bigResult,sizeof(bigResult)))
+	{
+		if(strlen(bigResult))
+		{
+			float idlet = atof(bigResult);
+			float percentage = 100;
+			percentage = percentage - idlet;
+			sprintf(selfStat->cpu, "%f", percentage);
+			selfStat->cpu[strlen(bigResult)] = '\0';
+		}
+		else
+			sprintf(selfStat->cpu,"%s","00");
+	}
+	else
+	{
+		print_agent("infosync.log","GetNodeStatus :Failed To Read Cpu Status.");	
+		sprintf(selfStat->cpu,"%s","00");
+	}
+
+	memset(bigResult,0,sizeof(bigResult));
+	if(!getcmdvals(hdd_cmd,bigResult,sizeof(bigResult)))
+	{
+		if(strlen(bigResult))
+		{	
+			int i=0;
+			while(i<strlen(bigResult))
+			{
+				if(bigResult[i] == '%')
+					bigResult[i]='\0';
+				i++;
+			}
+
+			sprintf(selfStat->secMem,"%s",bigResult);
+		}
+		else
+			sprintf(selfStat->secMem,"%s","00");
+	}
+	else
+	{
+		print_agent("infosync.log","GetNodeStatus :Failed To Read Disk Status.");
+		sprintf(selfStat->secMem,"%s","00");
+	}
+
+	memset(bigResult,0,sizeof(bigResult));
+	if(!getcmdvals(mem_cmd,bigResult,sizeof(bigResult)))
+	{		
+		int i=0;
+		while(i<strlen(bigResult))
+		{
+			if(bigResult[i]=='\n')
+			{
+				bigResult[i]='\0';
+				break;
+			}
+			i++;
+
+		}
+		sprintf(selfStat->mem,"%s",bigResult);
+	}
+	else
+	{
+		print_agent("infosync.log","GetNodeStatus :Failed To Read Mem Status.");
+		sprintf(selfStat->mem,"%s","00");
+	}
+	return 0;
+}
+
+int sendStatusPackage(int socketfd,int nodeType,char* IPaddrs)
+{
+
+	char statBuff[(sizeof(CONFCOMMAND)+sizeof(STATUSNODE))] = {0};
+	CONFCOMMAND respCommand;
+	STATUSNODE selfStat;
+	int writtenBytes = -1;	
+
+	getNodeStatusDetail(&selfStat,nodeType,IPaddrs);
+
+	respCommand.service = 0x81;
+	respCommand.command = 0x09;
+
+	memcpy(statBuff,&respCommand,(sizeof(CONFCOMMAND)));
+	memcpy(statBuff+(sizeof(CONFCOMMAND)),&selfStat,(sizeof(STATUSNODE)));
+
+	writtenBytes = write(socketfd,statBuff,(sizeof(CONFCOMMAND)+sizeof(STATUSNODE)));
+	if(writtenBytes <= 0)
+	{
+		if(errno == EPIPE)
+		{
+			print_agent("infosync.log","Failed To Write Node Status, Active Server Closed Connection");
+			return -1;
+		}
+		print_agent("infosync.log","Failed To Write Node Status");	
+	}
+	return 0;
+}
+
+bool StartListner()
+{
+	struct sockaddr_in sockAddr;
+	int sockLen = -1;
+
+	ListenAgentSock = socket(PF_INET,SOCK_STREAM,0);
+	if(ListenAgentSock < 0)
+	{
+		print_agent("infosync.log","PassiveInfo :Startup server failed To Intialize Socket.\n");
+		return false;
+	}
+
+	setSockreuse(ListenAgentSock);
+	sockAddr.sin_family = AF_INET;
+	sockAddr.sin_port=htons(INFOAGENT_SERVICE_PORT);
+	sockAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	sockLen = sizeof(sockAddr);
+
+	if(bind(ListenAgentSock,(struct sockaddr *)&sockAddr,sockLen) == -1)
+	{
+		print_agent("infosync.log","PassiveInfo :Startup server failed To bind Socket.\n");
+		return false;
+	}
+	if(listen(ListenAgentSock,MAX_LISTEN_BACKLOG_LIMIT) == -1)
+	{
+		print_agent("infosync.log","PassiveInfo :Failed To start Listner Socket");
+		return false;
+	}
+	return true;
+}
+
+void StartPassiveServer()
+{
+	char VirtualIP[IPADRRESS_MAX_LEN] = {0};
+	char ActiveLBIP[IPADRRESS_MAX_LEN] = {0};
+
+	int selfType = -1;
+	char selfIP[IPADRRESS_MAX_LEN] = {0};
+
+	struct sockaddr_in clientSockAddr;
+	CONFIG_DATA *confbuffer;
+	struct timeval tv;
+	char serverlist[MAX_NUMBER_OF_REAL_SERVERS*40] = {0};
+	int clientSock;
+	int data_len=0;
+	struct stat st;	
+	int isModified = 0;
+	int selret = 0;
+	socklen_t sockLen;
+	char *readData = NULL;	
+
+	print_agent("infosync.log","PassiveInfo :Starting UDP server \n");
+	if(!StartListner())
+	{
+		print_agent("infosync.log","PassiveInfo :Failed To Setup Listner");
+		return;
+	}
+	sockLen = sizeof(int);
+
+	readData = (char *)malloc(sizeof(CONFIG_DATA)+sizeof(CONFCOMMAND));
+	if(readData == NULL)
+	{
+		print_agent("infosync.log","PassiveInfo :Failed to allocate memory.");
+		return;
+	}
+
+	while(!g_CondVar)
+	{
+		tv.tv_sec = INFOAGENT_SERVICE_TIMEOUT_FOR_CONNECTION;
+		tv.tv_usec = 0;
+		fd_set servfd;
+		FD_ZERO(&servfd);
+		FD_SET(ListenAgentSock,&servfd);
+
+		selret = select(ListenAgentSock+1,&servfd,NULL,NULL,&tv);
+
+		if(selret == 1)
+		{
+			clientSock = accept(ListenAgentSock,(struct sockaddr*)&clientSockAddr,(socklen_t*)&sockLen);
+			if(clientSock <= 0)
+			{
+				print_agent("infosync.log","PassiveInfo :Failed To Accept Client Connection.");
+				continue;
+			}
+		}
+		else if(selret == 0){
+			print_agent("infosync.log","PassiveInfo :Socket Select TimedOut");
+			continue;
+		}
+		
+		memset(readData,0,sizeof(CONFIG_DATA)+sizeof(CONFCOMMAND));
+		RecvData(clientSock,readData,sizeof(CONFIG_DATA)+sizeof(CONFCOMMAND),&data_len);
+
+		if(data_len < (sizeof(CONFIG_DATA)+sizeof(CONFCOMMAND)))
+		{
+			print_agent("infosync.log","PassiveInfo :Data Recv failed or read Lesser data\n");
+			close(clientSock);
+			continue;
+		}
+		else if(stat(FILESYNC_CONFIGURATION_FILE,&st) == -1)
+		{
+			
+			/*This is ONLY One Time and First Iteration Of StandBy Server and Real Server.*/
+			print_agent("infosync.log","PassiveInfo :First Iteration Setting Variables.");
+			char* tempserver;
+			char zonename[256] = {0};
+			REALSERVER SelfSharedInfo;
+			memset(&SelfSharedInfo,0,sizeof(REALSERVER));
+			memset(zonename,0,sizeof(zonename));
+			confbuffer = (CONFIG_DATA*)(readData + sizeof(CONFCOMMAND));  
+			sprintf(selfIP,"%s",inet_ntoa(GetInterfaceInfo(confbuffer->IntfName)));
+			sprintf(SelfSharedInfo.IPaddress,"%s",selfIP);
+			sprintf(SelfSharedInfo.IntfName,"%s",confbuffer->IntfName);
+			sprintf(SelfSharedInfo.ActiveIPAddress,"%s",confbuffer->ActivePrivateIP);
+			sprintf(SelfSharedInfo.VirtualIPAddress,"%s",confbuffer->ClusterVirtualIP);
+			time_t activeMachineTime = strtol(confbuffer->current_time,NULL,10);
+		
+			print_agent("infosync.log","PassiveInfo :Setting Cluster conf self-ip %s ,intface %s, ActiveIP %s VirtIP %s TimeZone %s",selfIP,confbuffer->IntfName,confbuffer->ActivePrivateIP,confbuffer->ClusterVirtualIP,confbuffer->zonename);
+			
+			getTimeZoneDetails(zonename);
+
+			if(strcmp(confbuffer->zonename,zonename))
+			{
+				print_agent("infosync.log","PassiveInfo::My time Zone is different than Active Server, Exiting");
+				return;
+			}
+			else 
+			{
+				time_t now = time(NULL);
+				print_agent("infosync.log","PassiveInfo:: Time Difference Mine[%d]-Active[%d]=%d",now,activeMachineTime,(now-activeMachineTime));
+				if(abs(now-activeMachineTime) > 60){	
+					print_agent("infosync.log","PassiveInfo:: WARNING Running with a time difference more than ONE minute!!!");	
+					/*Sync Time With Active Server.*/
+					char cmd[150] = {0};
+					sprintf(cmd,"echo \"date -s \\\"$(date -d @%d)\\\"\" > /tmp/timeset.sh",activeMachineTime+1);
+					system(cmd);
+					system("echo \"hwclock --systohc\" >> /tmp/timeset.sh");
+					system("chmod ugo+x /tmp/timeset.sh");	
+					if(!SendCommandToDaemon(SYNC_TIME))
+					{
+						print_agent("infosync.log","PassiveInfo:: Failed To Sync Time Between Servers.");
+						//return;
+					}	
+				}
+			}
+	
+			if(strcmp(confbuffer->BackupPrivateIP,selfIP) == 0)
+			{
+				SelfSharedInfo.type = STANDBY_LOAD_BALANCER;
+			}
+			sprintf(serverlist,"%s",confbuffer->RealServer);
+
+			tempserver=strtok(serverlist,",");
+			do{
+				/*If My IP Address also in real server List I am LOAD_BALANCER_WITH_VPN_SERVER.*/
+				if(strcmp(tempserver,selfIP) == 0)
+				{
+					SelfSharedInfo.type |= REAL_VPN_SERVER;
+				}
+				tempserver=strtok(NULL,",");
+
+			}while(tempserver !=NULL);
+
+			selfType = SelfSharedInfo.type;
+			print_agent("infosync.log","PassiveInfo :Replying Active Server With Status packet.\n");
+			sendStatusPackage(clientSock, SelfSharedInfo.type,selfIP);
+
+
+			if(!FillNodeInfoIntoSharedMemory(&SelfSharedInfo))
+			{
+				print_agent("infosync.log","PassiveInfo :Failed To Fill Information Into Shared Memory");
+				close(clientSock);
+				return;
+			}
+			print_agent("infosync.log","PassiveInfo :InfoAgent Updating FileSync Configuration File.");	
+			if(!UpdateFileSynConf(confbuffer,selfType,NULL))
+			{
+				print_agent("infosync.log","PassiveInfo :Failed To Update FileSync Configuration File");
+				close(clientSock);
+				return;
+
+			}
+			print_agent("infosync.log","PassiveInfo :InfoAgent Launching FileSync Daemon In Start");
+			if(!LaunchFileSyncDaemon())
+			{
+				print_agent("infosync.log","PassiveInfo :Failed To Launch FileSync Daemon");
+				close(clientSock);
+				return;
+			}
+
+			memcpy(ActiveLBIP,confbuffer->ActivePrivateIP,strlen(confbuffer->ActivePrivateIP)); 
+
+			if((strlen(VirtualIP)<= 0) ||(strcmp(VirtualIP,confbuffer->ClusterVirtualIP)!=0))
+			{
+				memcpy(VirtualIP,confbuffer->ClusterVirtualIP,strlen(confbuffer->ClusterVirtualIP));
+				if(SelfSharedInfo.type & REAL_VPN_SERVER)
+				{
+					char IptableCommand[512]={0};
+					print_agent("infosync.log","Calling IP Tables PreRouting Commands To Accept traffic with IP as VIP.\n");
+
+					system("iptables -t nat -F");
+
+					sprintf(IptableCommand,"iptables -t nat -A PREROUTING -i %s -d %s -p tcp --dport %d -j DNAT --to %s ",SelfSharedInfo.IntfName,VirtualIP,80,SelfSharedInfo.IPaddress);
+					system(IptableCommand);
+
+					sprintf(IptableCommand,"iptables -t nat -A PREROUTING -i %s -d %s -p tcp --dport %d -j DNAT --to %s ",SelfSharedInfo.IntfName,VirtualIP,443,SelfSharedInfo.IPaddress);
+					system(IptableCommand);
+
+
+				}
+			}
+			close(clientSock);
+		}
+		else	
+		{
+			sendStatusPackage(clientSock,selfType,selfIP);
+
+			confbuffer = (CONFIG_DATA*)(readData + sizeof(CONFCOMMAND));
+			print_agent("infosync.log","PassiveInfo :InfoAgent Updating FileSync Configuration File.");
+			isModified = 0;
+			if(!UpdateFileSynConf(confbuffer,selfType,&isModified))
+			{
+				print_agent("infosync.log","PassiveInfo :Failed To Update FileSync Configuration File");
+			}
+			if(isModified == 1){
+				print_agent("infosync.log","PassiveInfo :InfoAgent Launching FileSync Daemon After Conf File Changed.");
+				if(!LaunchFileSyncDaemon())
+				{
+					print_agent("infosync.log","PassiveInfo :Failed To Launch FileSync Daemon");
+				}
+			}
+		}
+		close(clientSock);
+	}
+	close(ListenAgentSock);
+	return;
+}
+
+
+bool ParseLVSConfiguration(CONFIG_DATA *ClusterInfo,REALSERVER *SelfInfo,int *nodeCount,struct lvsService **RealServerList)
+{
+	struct lvsConfig config;
+	int line,rc;
+	int j=0;
+	int actual_nodecount=0;
+	char infName[8]={0};
+	struct lvsVirtualServer* lserv = NULL;
+	char* virtInterface = NULL;
+	char *ethname = NULL;
+	char messageBuffer[1024]={0};
+	struct lvsService *tmpRealServerList = NULL;	
+
+	int fd = open(CNF_FILE, O_RDONLY);
+	if (fd <=0 )
+	{
+		print_agent("infosync.log","ActiveLB:Failed to open %s For Parsing\n",CNF_FILE);
+		return false;
+	}
+	rc = lvsParseConfig (fd, &config, &line);
+
+	lserv = config.virtServers+0;
+	virtInterface = (char *)malloc(strlen(lserv->virtualDevice));
+	strcpy(virtInterface,lserv->virtualDevice);
+	ethname = strtok(virtInterface,":");
+
+	if(strcmp(config.primaryServerName,inet_ntoa(GetInterfaceInfo(ethname)))== 0)
+	{
+		memcpy(ClusterInfo->ActivePrivateIP,config.primaryServerName,strlen(config.primaryServerName));
+		memcpy(ClusterInfo->BackupPrivateIP,config.backupServerName,strlen(config.backupServerName));
+	}
+	else if(strcmp(config.backupServerName,inet_ntoa(GetInterfaceInfo(ethname)))== 0)
+	{
+		memcpy(ClusterInfo->ActivePrivateIP,config.backupServerName,strlen(config.backupServerName));
+		memcpy(ClusterInfo->BackupPrivateIP,config.primaryServerName,strlen(config.primaryServerName));
+		backupActive = true;
+	}
+	memcpy(ClusterInfo->ClusterVirtualIP,inet_ntoa(lserv->virtualAddress),strlen(inet_ntoa(lserv->virtualAddress)));
+
+	memcpy(infName,ethname,strlen(ethname));
+	free(virtInterface);
+
+	ClusterInfo->RealServerCount=lserv->numServers;
+
+	sprintf(SelfInfo->IPaddress,"%s",ClusterInfo->ActivePrivateIP);
+	sprintf(SelfInfo->IntfName,"%s",infName);
+	SelfInfo->type = ACTIVE_LOAD_BALANCER;
+	actual_nodecount=lserv->numServers;
+	strcpy(SelfInfo->ActiveIPAddress,ClusterInfo->ActivePrivateIP);  	
+	//Nirav Added this code
+	strcpy(SelfInfo->VirtualIPAddress,ClusterInfo->ClusterVirtualIP);
+	print_agent("infosync.log","ActiveLB:Cluster Information Read \nVirtualIp %s , ActivePrivateIP %s BackUPPrivateIP %s Interface %s\n",ClusterInfo->ClusterVirtualIP,SelfInfo->IPaddress,ClusterInfo->BackupPrivateIP,SelfInfo->IntfName);
+
+	*RealServerList = (struct lvsService *)malloc(sizeof(struct lvsService)*actual_nodecount);
+
+	if(*RealServerList == NULL)
+	{
+		print_agent("infosync.log","ActiveLB:Memory Allocation Failure.");
+		return false;
+	}
+	else
+		tmpRealServerList = *RealServerList;
+	struct lvsService *ServerList = NULL;		
+	for(j=0; j< lserv->numServers; j++)
+	{
+
+		ServerList = lserv->servers+j;
+		tmpRealServerList[j].name = (char*)malloc(strlen(ServerList->name));
+		if(tmpRealServerList[j].name)
+			strcpy(tmpRealServerList[j].name,ServerList->name);
+		memcpy(&(tmpRealServerList[j].address),&(ServerList->address),sizeof(struct in_addr));
+		//strcpy((char*)&(RealServerList[j].address),(char*)&(ServerList->address));
+		tmpRealServerList[j].isActive = ServerList->isActive;
+		tmpRealServerList[j].port = ServerList->port;
+		tmpRealServerList[j].weight = ServerList->weight;	
+		print_agent("infosync.log","ActiveLB:Real Server %d Details \n======================= \nName %s ,ISActive %d Port %d\n======================",j,tmpRealServerList[j].name,tmpRealServerList[j].isActive,tmpRealServerList[j].port);
+
+		if((strcmp(SelfInfo->IPaddress,inet_ntoa(ServerList->address))==0) ||
+				(strcmp(ClusterInfo->BackupPrivateIP,inet_ntoa(ServerList->address))==0) )
+		{
+
+		}
+		else
+			actual_nodecount++;
+		strcat(messageBuffer,inet_ntoa(ServerList->address));
+
+		if(j != (lserv->numServers -1))
+			strcat(messageBuffer,",");
+	}
+
+	memcpy(ClusterInfo->RealServer,messageBuffer,strlen(messageBuffer));
+	ClusterInfo->RealServerCount = strlen(messageBuffer);
+	memcpy(ClusterInfo->IntfName,infName,strlen(infName));
+	SelfInfo->Real_serverlist = lserv;
+	*nodeCount = actual_nodecount;
+	lvsFreeConfig(&config);	
+	return true; 
+}
+#if 0
+bool FillNodeInfoIntoSharedMemory(REALSERVER *SelfSharedInfo)
+{
+	REALSERVER * selfInformation = NULL;
+	void *pttr = NULL;
+	int shmid ;
+
+	sem_get_lock(shmSem);
+
+	shmid=shmget(SHMKEY_NODEINFO,0,IPC_CREAT|0666);
+	if(shmid == -1)
+	{
+		print_agent("infosync.log","Failed To Fill Shared Memory With Node Information");
+		sem_set_unlock(shmSem);
+		return false;
+	}
+	else
+	{
+		print_agent("infosync.log","Writing Node Information into Shared mem\n");
+		pttr = shmat(shmid,NULL,0);
+		if(pttr){
+			selfInformation = (REALSERVER*)pttr;
+			strcpy(selfInformation->IPaddress,SelfSharedInfo->IPaddress);
+			selfInformation->type = ACTIVE_LOAD_BALANCER;// For Active LB
+			strcpy(selfInformation->IntfName,SelfSharedInfo->IntfName);
+			strcpy(selfInformation->VirtualIPAddress,SelfSharedInfo->VirtualIPAddress);
+			print_agent("infosync.log","Node Information Written: InterFace %s IPAddress %s	VirtualIPAddress %s NodeType %d\n",selfInformation->IntfName,selfInformation->IPaddress,selfInformation->type);
+			shmdt(pttr);
+		}
+	}
+	sem_set_unlock(shmSem);
+	return true;
+}
+#endif
+
+
+bool SendCommandToDaemon(char *command)
+{
+	int fd;
+	int writtenBytes;
+	fd = open(COMMAND_DAEMON_PIPE_NAME, O_WRONLY|O_NONBLOCK);
+	if(fd)
+	{
+		print_agent("infosync.log","Sending Command %s.",command);
+		writtenBytes = write(fd,command,strlen(command));
+		if(writtenBytes <= 0)
+		{
+			if(errno == EPIPE)
+				print_agent("infosync.log","Sending Command Failed ,Peer End is Closed.");
+			else
+				print_agent("infosync.log","Sending Command Failed.");
+			return false;	
+		}
+		close(fd);
+		return true;
+	}
+	else
+		print_agent("infosync.log","Failed To open Named Pipe For Sending Command To Restart FileSync.");
+	return false;
+}
+
+bool LaunchFileSyncDaemon()
+{
+	if(!SendCommandToDaemon(FILESYNC_DAEMON_RESTART))
+	{
+		return false;
+	}
+	else	
+		return true;
+}
+
+void StartActiveLoadBalancer()
+{
+	REALSERVER SelfSharedInfo;
+	char infName[8]={0};
+	CONFIG_DATA ServerInfost;
+	int nodeCount = 0;
+	struct lvsService *RealServerList = NULL;
+
+	pthread_mutex_init(&g_NodesStatPtr_mutex,NULL);
+
+	memset(&ServerInfost,0,sizeof(CONFIG_DATA));
+	memset(&SelfSharedInfo,0,sizeof(REALSERVER));
+
+	print_agent("infosync.log","Start Active Load Balancer server\n");
+
+	if(!ParseLVSConfiguration(&ServerInfost,&SelfSharedInfo,&nodeCount,&RealServerList))
+	{
+		print_agent("infosync.log","ActiveLoadBalancer : Failed In Parsing LVS Configuration File.");
+		return;	
+	}
+
+	memcpy(infName,ServerInfost.IntfName,sizeof(infName));
+		
+	getTimeZoneDetails(ServerInfost.zonename);
+
+	if(!FillNodeInfoIntoSharedMemory(&SelfSharedInfo))
+	{
+		print_agent("infosync.log","ActiveLoadBalancer : Failed To Fill Information Into Shared Memory");
+		return;
+	}
+
+	if(!UpdateFileSynConf(&ServerInfost,ACTIVE_LOAD_BALANCER,NULL))
+	{
+		print_agent("infosync.log","ActiveLoadBalancer : Failed To Update FileSync Configuration File");
+		return;
+	}	
+	if(!LaunchFileSyncDaemon())
+	{
+		print_agent("infosync.log","ActiveLoadBalancer : Failed To Launch FileSync Daemon");
+		return;
+	}
+	print_agent("infosync.log","ActiveLoadBalancer : Updated FileSync Conf File and Started FileSync Daemon.");	
+	print_agent("infosync.log","ActiveLoadBalancer : Number of Real Servers in Cluster are %d\n",nodeCount);
+
+	pthread_mutex_lock(&g_NodesStatPtr_mutex);
+	g_NodesStatPtr=(STATUSNODE*)malloc(sizeof(STATUSNODE)*nodeCount);
+	pthread_mutex_unlock(&g_NodesStatPtr_mutex);
+
+	pthread_create(&activeListener,NULL,startCommandServer,(void*)ServerInfost.BackupPrivateIP);
+
+	system("touch /home/fes/fescommon/state.xml");
+	system("touch /etc/httpd/conf/httpd.conf");
+
+	struct sockaddr_in si_other;	
+	int num_nodes=0;
+
+	memset((char *) &si_other, 0, sizeof(si_other));
+	si_other.sin_family = AF_INET;
+	si_other.sin_port = htons(INFOAGENT_SERVICE_PORT);
+
+	int SendListenAgentSock = -1;
+	struct lvsService *ServerList = NULL;
+	CONFCOMMAND statusCmd;
+	CONFCOMMAND *resptatusCmd = NULL;
+	STATUSNODE * respStatus = NULL;
+	char *statBuff = NULL, *confBuff = NULL;
+	int recvLength=0;
+	
+	
+	/*Active InfoAgent Will Send Every Node Information Of Cluster 
+	  And Expects Peer Node Status Information.*/	
+	if(RealServerList == NULL)
+	{
+		print_agent("infosync.log","ActiveLoadBalancer: RealServerList is NULL");
+		return;
+	}
+	statBuff = (char*)malloc(sizeof(STATUSNODE)+sizeof(CONFCOMMAND));
+	if(statBuff == NULL)
+	{	
+		print_agent("infosync.log","ActiveLoadBalancer: Recieve Buffer Allocation Failed.");
+		return;
+	}
+	
+	confBuff = (char*)malloc(sizeof(CONFIG_DATA)+sizeof(CONFCOMMAND));
+        if(confBuff == NULL)
+        {
+                print_agent("infosync.log","ActiveLoadBalancer: Send Buffer Allocation Failed.");
+                return;
+        }	
+
+	int j,writeLen;
+	memset(&statusCmd,0,sizeof(CONFCOMMAND));
+	statusCmd.service = ACTIVE_LOAD_BALANCER;
+	memcpy(confBuff,&statusCmd,sizeof(CONFCOMMAND));
+	memcpy(confBuff+sizeof(CONFCOMMAND),&ServerInfost,sizeof(CONFIG_DATA));
+	CONFIG_DATA *tptr = (CONFIG_DATA *)(confBuff + sizeof(CONFCOMMAND));	
+	//char *time_field = (char *)().current_time;	
+
+	while(!g_CondVar)
+	{
+		num_nodes=0;
+
+		for(j=0 ;j < nodeCount ;j++)
+		{
+			ServerList = RealServerList+j;
+
+			print_agent("infosync.log","Sending Cluster Configuration Data To %d[%s] [%s]\n",
+					j,inet_ntoa(ServerList->address),inet_ntoa(GetInterfaceInfo(infName)));
+
+			if(strcmp(inet_ntoa(ServerList->address),ServerInfost.ActivePrivateIP)== 0)
+			{
+				print_agent("infosync.log","Real Server Address matches with ActiveIP.\n");
+				if(num_nodes < nodeCount)
+				{
+					print_agent("infosync.log","Adding Self Entry at %d\n",num_nodes);
+					pthread_mutex_lock(&g_NodesStatPtr_mutex);
+					getNodeStatusDetail(g_NodesStatPtr+num_nodes,ACTIVE_LOAD_BALANCER,ServerInfost.ActivePrivateIP);
+					pthread_mutex_unlock(&g_NodesStatPtr_mutex);
+					num_nodes++;
+				}
+				continue;
+			}
+
+			SendListenAgentSock = socket(PF_INET,SOCK_STREAM,0);
+			if(SendListenAgentSock  < 0)
+			{
+				print_agent("infosync.log","ActiveLoadBalancer:Failed To Open Socket for sending cluster info.\n");
+				continue;
+			}
+			si_other.sin_addr = ServerList->address;
+
+			print_agent("infosync.log","Sending Cluster Information Data to Real Server %s\n"
+					,inet_ntoa(si_other.sin_addr));
+
+			if(connect(SendListenAgentSock,(struct sockaddr *)&si_other, sizeof(struct sockaddr)) < 0)
+			{
+				print_agent("infosync.log","Failed To Connect Peer End");
+			} 
+			else
+			{
+				sprintf(tptr->current_time,"%u",(unsigned)time(NULL));
+			
+				print_agent("infosync.log","Time Sent from Active Load Balancer %s",tptr->current_time);	
+
+				writeLen = write(SendListenAgentSock,confBuff,sizeof(CONFIG_DATA)+sizeof(CONFCOMMAND));
+				if(writeLen <= 0)
+				{	
+					if(errno == EPIPE)
+						print_agent("infosync.log","ActiveLoadBalancer: Peer End Closed.");
+					close(SendListenAgentSock);
+					continue;							
+				}
+				print_agent("infosync.log","ActiveLoadBalancer: Wrote %d Bytes Of Configuration Data",writeLen);	
+				recvLength = 0;	
+				RecvData(SendListenAgentSock,statBuff,sizeof(STATUSNODE)+sizeof(CONFCOMMAND),&recvLength);
+
+				if(recvLength == (sizeof(STATUSNODE)+sizeof(CONFCOMMAND)))
+				{
+					resptatusCmd = (CONFCOMMAND *)statBuff;
+					respStatus = (STATUSNODE *)(statBuff + sizeof(CONFCOMMAND));
+					print_agent("infosync.log","Got Status Msg as %x From [%s][cpu %s] [mem %s][secmem %s][uptime %s]\n",resptatusCmd->service,respStatus->nodeIP,respStatus->cpu,respStatus->mem,respStatus->secMem,respStatus->sysUpTime);
+					if(num_nodes < nodeCount)
+					{
+						pthread_mutex_lock(&g_NodesStatPtr_mutex);
+						memcpy(g_NodesStatPtr+num_nodes,respStatus,sizeof(STATUSNODE));
+						pthread_mutex_unlock(&g_NodesStatPtr_mutex);
+						num_nodes++;
+					}
+				}
+				else
+				{
+					print_agent("infosync.log","ActiveLoadBalancer: Got Data less than the Expected %d Expected %d",recvLength,(sizeof(STATUSNODE)+sizeof(CONFCOMMAND)));
+				}
+
+			}
+			close(SendListenAgentSock);
+			sleep(5);
+		}
+		print_agent("infosync.log","Assigning global values  %d  \n",num_nodes);
+		g_NumNodes = num_nodes;
+
+		sleep(60);
+	}
+	print_agent("infosync.log","ActiveLoadBalancer: Finished Execution.");	
+#if 0	
+	g_NumNodes = 0;
+	pthread_mutex_lock(&g_NodesStatPtr_mutex);
+	free(g_NodesStatPtr);	
+	pthread_mutex_unlock(&g_NodesStatPtr_mutex);
+	pthread_join(activeListener,NULL);
+#endif
+	exit(EXIT_SUCCESS);	
+}
+
+void ChildSignalHandler(int sigNum)
+{
+	print_agent("infosync.log","Child Signal Handler Called");
+	g_CondVar = 1;
+	ListenAgentSock = 0;	
+	close(ListenAgentSock);
+	exit(EXIT_SUCCESS);
+}
+
+bool CreateNodeInfoSharedMemory()
+{
+	int shmid = -1;
+	shmSem=create_sem();
+	if(shmSem == -1)
+	{	
+		print_agent("infosync.log","CreateNodeInfoSharedMemory::Failed To Create Semaphore");
+		return false;
+	}				
+	sem_get_lock(shmSem);
+	shmid = shmget(SHMKEY_NODEINFO,sizeof(REALSERVER),IPC_CREAT|IPC_EXCL|0666);
+	if(shmid == -1)
+	{
+		if(errno == EEXIST){
+			print_agent("infosync.log","CreateNodeInfoSharedMemory::Deleting Already Existing Shared memory\n");
+			int temp = shmget(SHMKEY_NODEINFO,0,IPC_CREAT|0666);
+			if(shmctl(temp,IPC_RMID,0) == -1)
+			{
+				print_agent("infosync.log","CreateNodeInfoSharedMemory::Failed to Delete already Existing Memory");
+				sem_set_unlock(shmSem);
+				return false;
+			}
+			shmid = shmget(SHMKEY_NODEINFO,sizeof(REALSERVER),IPC_CREAT|IPC_EXCL|0666);
+			if(shmid == -1)
+			{
+				print_agent("infosync.log","CreateNodeInfoSharedMemory::Failed To Get Shared Memory,Some process alreay attached.");
+				sem_set_unlock(shmSem);	
+				return false;
+			}
+			else
+			{
+				print_agent("infosync.log","CreateNodeInfoSharedMemory::Successfully Created Shared Memory After Removinf Existing One");
+				sem_set_unlock(shmSem);
+				return true;
+			}	
+		}
+		print_agent("infosync.log","CreateNodeInfoSharedMemory::Failed To Get Shared Memory.");
+		sem_set_unlock(shmSem);
+		return false;
+	}
+	sem_set_unlock(shmSem);
+	return true;
+}
+
+void startInfoAgent(char* LBROLE)
+{
+
+	struct stat st;
+
+	signal(SIGTERM,ChildSignalHandler);
+	signal(SIGPIPE,SIG_IGN);
+
+	if(!CreateNodeInfoSharedMemory())
+	{
+		print_agent("infosync.log","startInfoAgent:: Failed to Create NodeInfoShared Memory.");
+		return;
+	}
+	if(stat(CNF_FILE,&st)!= 0)
+	{
+		print_agent("infosync.log","startInfoAgent:: Start UDP server In case of REAL-VPN-SERVER.\n");
+		StartPassiveServer();
+	}
+	else{
+		if(LBROLE != NULL)
+		{
+			if(strstr(LBROLE,"Active")!= NULL)
+			{
+				print_agent("infosync.log","startInfoAgent:: Starting ACTIVE Mode infoAgent on ACTIVE_LOAD_BALANCER.");
+				StartActiveLoadBalancer();
+			}
+			else
+			{
+				print_agent("infosync.log","startInfoAgent:: Starting UDP Server In case of STANDBY_LOAD_BALANCER.");	
+				StartPassiveServer();
+			}
+
+		}
+		else
+		{
+			print_agent("infosync.log","startInfoAgent:: Starting UDP Server In case of STANDBY_LOAD_BALANCER.");
+			StartPassiveServer();
+		}
+	}
+
+}
+
+bool FillNodeInfoIntoSharedMemory(REALSERVER *SelfSharedInfo)
+{
+	REALSERVER * selfInformation = NULL;
+	void *pttr = NULL;
+	int shmid ;
+
+	sem_get_lock(shmSem);
+
+	shmid=shmget(SHMKEY_NODEINFO,0,IPC_CREAT|0666);
+	if(shmid == -1)
+	{
+		print_agent("infosync.log","Failed To Fill Shared Memory With Node Information");
+		sem_set_unlock(shmSem);
+		return false;
+	}
+	else
+	{
+		print_agent("infosync.log","Writing Node Information into Shared mem\n");
+		pttr = shmat(shmid,NULL,0);
+		if(pttr){
+			selfInformation = (REALSERVER*)pttr;
+			memset(selfInformation,0,sizeof(REALSERVER));
+			strcpy(selfInformation->IPaddress,SelfSharedInfo->IPaddress);
+			selfInformation->type = SelfSharedInfo->type;
+			strcpy(selfInformation->IntfName,SelfSharedInfo->IntfName);
+			strcpy(selfInformation->ActiveIPAddress,SelfSharedInfo->ActiveIPAddress);
+			strcpy(selfInformation->VirtualIPAddress,SelfSharedInfo->VirtualIPAddress);
+			print_agent("infosync.log","Node Information Written: InterFace %s IPAddress %s ActiveIPAddress %s:%s NodeType %d ClusterVIP %s\n",selfInformation->IntfName,selfInformation->IPaddress,selfInformation->ActiveIPAddress,SelfSharedInfo->ActiveIPAddress,selfInformation->type,selfInformation->VirtualIPAddress);
+			shmdt(pttr);
+		}
+	}
+	sem_set_unlock(shmSem);
+	return true;
+}
+
+void getOtherInstancePIDs(int *parentPID,int *childPID)
+{
+	int fd;
+	char buffer[50] = {0};
+	char *cpid,*ppid ;
+	fd = open(INFOAGENT_PID_FILE,O_RDONLY,0666);
+	if(fd < 0)
+	{
+		print_agent("infosync.log","Failed To Open PID File For Reading.");
+		return;
+	}
+	else
+	{
+		int readBytes = read(fd,buffer,sizeof(buffer));
+		if(readBytes > 0)
+		{
+			strtok(buffer,"=");
+			ppid =  strtok(NULL,"&");
+			strtok(NULL,"=");
+			cpid =  strtok(NULL,"=");
+			print_agent("infosync.log","Child Pid is %s and Parent Pid is %s.",cpid,ppid);
+			if(ppid)
+				*parentPID = atoi(ppid);
+			if(cpid)
+				*childPID = atoi(cpid);
+		}
+		/*syntax is PARENT_ID=&CHILD_ID=*/
+	}
+	close(fd);
+}
+bool stopAlreadyRunningInstances(int *lockFd)
+{
+	int parentPID,childPID;
+	if((*lockFd = open(INFOAGENT_LOCK_FILE,O_CREAT|O_RDWR, 0666))  < 0)
+	{
+		print_agent("infosync.log","Failed To Open InfoAgent Lock File.");
+		return false;
+	}
+	if(flock(*lockFd, LOCK_EX|LOCK_NB) < 0) {
+		print_agent("infosync.log","Instances Of InfoAgent Already Running.");		
+		getOtherInstancePIDs(&parentPID,&childPID);
+		if(parentPID > 0)
+			kill(parentPID,SIGKILL);
+		if(childPID > 0)
+			kill(childPID,SIGKILL);
+		return true;
+	}
+	else
+	{
+		print_agent("infosync.log","No Other Instances Of InfoAgent Running");
+		return true;
+	}
+}
+
+void saveProcessID()
+{
+	char command[100] = {0};
+	//int ppid = getppid();
+	int ppid = 0;
+	int pid = getpid();
+	/*syntax is PARENT_ID=&CHILD_ID=*/
+	print_agent("infosync.log","Parent PID %d Child PID %d",ppid,pid);
+	sprintf(command,"echo \"PARENT_ID=%d&CHILD_ID=%d\" > %s",ppid,pid,INFOAGENT_PID_FILE);
+	print_agent("infosync.log","Save Pid Command is %s",command);
+	system(command);
+}
+
+void ParentSignalHandler(int sigNum)
+{
+	print_agent("infosync.log","Parent Signal Handler Called");
+	flock(lockFd,LOCK_UN);
+	close(lockFd);
+}
+
+void getTimeZoneDetails(char *zonename)
+{
+	char filename[256];
+	struct stat fstat;
+	int status;
+
+	status = lstat("/etc/localtime", &fstat);
+	if (S_ISLNK(fstat.st_mode))
+	{
+		int nSize = readlink("/etc/localtime", filename, 256);
+		if (nSize > 0)
+		{
+			filename[nSize] = 0;
+			strcpy(zonename,filename+strlen("/usr/share/zoneinfo/"));
+		}
+	}
+	else if (S_ISREG(fstat.st_mode))
+	{	
+		time_t t = time(NULL);
+		struct tm lt = {0};
+
+		localtime_r(&t, &lt);	
+		strcpy(zonename,lt.tm_zone);		
+	}
+	print_agent("infosync.log","Time Zone Read As %s",zonename);	
+}
+
+int main(int argc,char** argv)
+{
+	pid_t childPID;
+	//int lockFd;
+	if(!stopAlreadyRunningInstances(&lockFd))
+	{
+		print_agent("infosync.log","Info Agent Failed To Start\n");
+		exit(EXIT_SUCCESS);
+	}
+	if((childPID=fork()) < 0)
+	{
+		print_agent("infosync.log","Info Agent start failed in Fork.\n");
+		exit(EXIT_SUCCESS);
+	}
+	else
+	{
+		if(childPID == 0)
+		{
+			print_agent("infosync.log","Start Agent child Process \n");
+			saveProcessID();
+			system("rm -rf /home/fes/filesync.conf");
+
+#if 1 
+			struct rlimit lim;
+			lim.rlim_cur = RLIM_INFINITY;
+			lim.rlim_max = RLIM_INFINITY;
+			setrlimit(RLIMIT_CORE, &lim);			
+#endif			
+			startInfoAgent(argv[1]);
+
+			flock(lockFd,LOCK_UN);
+			close(lockFd);
+		}
+		else if(childPID > 0)
+		{
+			signal(SIGTERM,ParentSignalHandler);
+#if 0	
+			print_agent("infosync.log","Start FileSync Agent from Parent process \n");
+			system("rm -rf /home/fes/filesync.conf");	
+			system("pkill FileSync");
+			system("/home/fes/FileSync &");
+			_exit(EXIT_SUCCESS);
+#endif
+			_exit(EXIT_SUCCESS);
+
+
+		}
+
+	}
+	return EXIT_SUCCESS;
+}

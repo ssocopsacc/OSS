@@ -1,0 +1,48 @@
+--- linkstate.c_orig	2014-10-08 15:58:13.000000000 +0530
++++ linkstate.c	2014-11-01 14:05:46.000000000 +0530
+@@ -165,17 +165,37 @@
+ 		return edata.data;
+         } else if (errno == EOPNOTSUPP) {
+ 		/* oops, try falling back to MII */
+-		struct mii_ioctl_data *mii = (struct mii_ioctl_data *)&ifr->ifr_data;
+-		memset(mii, 0, sizeof(*mii));
+-		mii->reg_num = MII_BMSR;
+-		err = ioctl(fd, SIOCGMIIREG, ifr);
+-		if (!err)
+-			return (mii->val_out & BMSR_LSTATUS ? 1 : 0);
++		//struct mii_ioctl_data *mii = (struct mii_ioctl_data *)&ifr->ifr_data;
++		//memset(mii, 0, sizeof(*mii));
++		//mii->reg_num = MII_BMSR;
++		//err = ioctl(fd, SIOCGMIIREG, ifr);
++		//if (!err)
++		//	return (mii->val_out & BMSR_LSTATUS ? 1 : 0);
+ 		/* No ETHTOOL or MII support - pretend the link's there */
+-		if (errno == EOPNOTSUPP)
++		//if (errno == EOPNOTSUPP)
++		//	return 1;
++		
++		int state = -1;
++    		int socId = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
++    		if (socId < 0) {
++			return 0;
++		}
++
++    		struct ifreq if_req;
++    		(void) strncpy(if_req.ifr_name, ifr->ifr_name, sizeof(if_req.ifr_name));
++    		int rv = ioctl(socId, SIOCGIFFLAGS, &if_req);
++    		close(socId);
++
++    		if ( rv == -1) {
++			return 0;
++		}
++
++    		if((if_req.ifr_flags & IFF_UP) && (if_req.ifr_flags & IFF_RUNNING)) {
+ 			return 1;
++		} else {
++			return 0;
++		}
+         }
+-
+ 	/* Any other errors: no link? */
+ 	return 0;
+ }

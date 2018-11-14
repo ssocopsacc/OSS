@@ -1,0 +1,39 @@
+.td_background
+{
+        font-family: Tahoma;
+        font-size: 11px;
+	background-color: #EEECFF;
+
+}
+.heading
+{
+        padding: 4px;
+        border: 1px solid #000000;
+        background-color: #333333;
+        color: #FFFFFF;
+        font-size: 14px;
+        font-weight: bold;
+}
+.help_detail
+{
+        font-size: 11px;
+}
+
+.help_desc
+{
+        font-size: 12px;
+        color: #2222AA;
+        font-weight: bold;
+}
+
+.help_section
+{
+        font-weight: bold;
+        text-decoration: underline;
+    color: #2222AA;
+}
+
+.help_item
+{
+        font-weight: bold;
+}

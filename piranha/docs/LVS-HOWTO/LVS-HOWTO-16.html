@@ -1,0 +1,449 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO: Authd/Identd </TITLE>
+ <LINK HREF="LVS-HOWTO-17.html" REL=next>
+ <LINK HREF="LVS-HOWTO-15.html" REL=previous>
+ <LINK HREF="LVS-HOWTO.html#toc16" REL=contents>
+</HEAD>
+<BODY>
+<A HREF="LVS-HOWTO-17.html">Next</A>
+<A HREF="LVS-HOWTO-15.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc16">Contents</A>
+<HR>
+<H2><A NAME="authd"></A> <A NAME="s16">16. Authd/Identd </A></H2>
+
+<P>
+<P>If initial connection to your service (telnet, ftp, sendmail...) is delayed
+by 10secs..5mins, but after you connect everything is fine, then you have
+problems with identd.
+<P>Since problems with identd affect many aspects of an LVS, there are
+references to identd in several places in this document. 
+I haven't worked out a way of collecting them all together yet,
+so best search with your editor for authd/identd.
+<P>There are two parts to identd on your servers
+<UL>
+<LI>Identd runs on your real-servers. 
+You don't care about this. 
+Identd is for clients on your real-servers 
+connecting to services on remote machines.
+You aren't using this when setting up an LVS.
+(However if you telnet from your real-servers for some other reason,
+you'll need to think about what identd is doing.)</LI>
+<LI>your LVS'ed services <EM>may</EM> ask the identd client on your
+server to connect to the identd on the client machine 
+and ask for the identity of the person
+connecting to the service on the real-server. 
+You don't want this. 
+In general there is no way for the reply to return to the real-server
+in an LVS.</LI>
+</UL>
+<P>The problem is in the second part, <EM>i.e.</EM> if the LVS'ed service
+on the real-server asks for the ident client to connect to the identd
+on the client. (This may be a little confusing, machines can be clients
+and servers at the same time.)
+<P>Here's a example telnet connection through a director to a real-server where 
+telnetd is running inside tcpwrappers. 
+tcpwrappers uses the ident client on the remote host (the
+one with the telnetd) to connect to 
+the identd on the local (telnet client) host.
+<P>
+<PRE>
+client:/director/usr/src/arch# telnet lvs2
+Trying 192.168.2.110...
+Connected to lvs2.mack.net.
+Escape character is '^]'.
+
+(delay)
+Welcome to Linux 2.2.19.
+
+
+bashfull login: 
+(successful login)
+</PRE>
+<P>
+<H2><A NAME="ss16.1">16.1 What is authd/identd?</A>
+</H2>
+
+<P>
+<P>identd is a demon run under inetd. 
+Other services running on the server can use identd to ask the client
+machine for the identity of the user making the request.
+When a request arrives at a server for such a service (e.g. telnet, sendmail),
+the auth client will connect from a high port to client:auth asking
+"who is the owner of the process requesting this service".
+If the client's authd replies with a <CODE>username@nodename</CODE>, the reply
+will be optionally logged on the server (eg to syslog) and the
+connection request will be handed back to telnetd (or whichever service). 
+If the reply is "<CODE>root@nodename</CODE>", or some null reply, or there is
+no authd on the client, then the server's authd will wait till
+a timeout before allowing connection. The delay is about 10secs for
+Slackware and 2mins for RedHat7.0. There is no checking of the
+validity of the reply and since the reply is under control of
+the client machine, the reply <CODE>username@nodename</CODE> could be bogus.
+<P>The authd is a security feature. However it doesn't get the
+server very much (you don't know who has made the connect request,
+only what they told you), while clients that fail are delayed. This
+may only be a nuisance for people telnet'ing in (provided they understand
+what's happening), but will bring mail delivery to a crawl.
+<P>If you setup an LVS with real-servers that have services running inside
+identd, you will have to deal with identd.
+Any service in inetd running under tcpwrappers 
+(probably just about every service, if tcpwrappers is installed) 
+and sendmail (see section on sendmail) use it.  
+<P>
+<H2><A NAME="ss16.2">16.2 comp.os.linux.security FAQ on identd</A>
+</H2>
+
+<P>
+<P>
+<PRE>
+comp.os.linux.security FAQ
+Daniel Swan 
+&lt;tt/swan_daniel@hotmail.com/ 
+v0.1 - Last updated:  April 20, 2000
+</PRE>
+<P>4.5)  What is Identd?  Can I disable it?
+<P>Identd identifies the username of a process owning a specific TCP/IP connection.
+It is usually run via inetd and listens on port 113.
+Identd should not be used as a method of authentication - 
+anyone with root access can alter their identd response.
+Indeed, on many systems (such as FreeBSD and Windows) 
+even a non-privledged user can specify whatever identd response they want.
+The protocol is most useful on multiuser systems as a method of tracking down problem users.
+If one of your users is causing problems on another system, 
+that system's admin can inform you of the username of 
+the specific user causing problems, saving you a lot of legwork.
+Should you run identd? That's really a judgement call.
+On systems with many users, the benefits could be great, 
+but it doesn't serve any particular purpose on a single user box.
+Not running identd may limit your ability to connect to certain servers - 
+many IRC and some FTP servers don't allow, or severly restrict, 
+non-identd'd connections, for example.
+However, running it means leaving a service open to the outside world, 
+with all the security risks that entails.
+Another thing to consider is that identd can allow 
+attackers to find out valuable information about your system, 
+such as whether a certain service is running as root, 
+the operating system you are running, 
+and the usernames of your users.
+Consider running identd with the -n flag, 
+which sends userid numbers instead of usernames.
+See the identd manpage and /etc/identd.conf for more 
+information about the available options.
+You can block access to identd by shutting it off entirely 
+(usually done via inetd, see section on disabling services), 
+or by using tcpwrappers and/or firewalling software to disable/restrict access.
+If you need identd enabled in order to connect to a certain server, 
+you might want to consider allowing access to it only from that server.
+If you do choose to firewall the identd port, 
+strongly consider using a reject policy rather than deny.
+Using deny may greatly increase the time it takes 
+you to connect to servers that utilize identd, 
+as they will wait for a response of some type before allowing you to connect.
+<P>
+<H2><A NAME="ss16.3">16.3 Why identd is a problem for LVS</A>
+</H2>
+
+<P>
+<P>The problem is that the identd/authd client makes a callback from the
+VIP (for VS-DR, VS-Tun) or the RIP (for VS-NAT) and the LVS doesn't know
+about it. For the simple case where clients call from the RIP see the section on
+<A HREF="LVS-HOWTO-20.html#clients_on_real-servers">running clients on real-servers</A>.
+There the client is independant of the LVS. 
+There you will see solutions when there are easy solutions.
+<P>The case of clients on the real-servers making call backs 
+triggered by an LVS client's requests to an LVS'ed service is
+more difficult as the result has to get back to the LVS'ed service. 
+<P>Normally in an LVS, the director in an LVS responds to connect requests by handing
+them to an arbitrary real-server. 
+The corrollary of this is that replies to a client request initiated on a real-server, 
+to the outside world, 
+will not return to the real-server unless something is done to handle it. 
+(The only solutions we have are those in the section on
+<A HREF="LVS-HOWTO-20.html#clients_on_real-servers">running clients on real-servers</A>.)
+<P>
+<UL>
+<LI>replies from the LVS client machine,
+arriving at the director are not connect requests, 
+and will not belong to an established connection.
+They will be dropped.</LI>
+<LI>even if the director could forward these replies to a real-server, 
+they could go to any real-server, and not neccessarily to the real-server
+which originated the request.</LI>
+</UL>
+<P>The result is that the client request will hang or timeout.
+<P>
+<H2><A NAME="ss16.4">16.4 tcpdumps of connections delayed by identd</A>
+</H2>
+
+<P>
+<P>Here's the tcpdump of the client telnet'ing to a VS-DR LVS. 
+Telnet on the real-server is running inside tcpwrappers, 
+client and real-servers cannot connect directly i.e. they have no routing to each other. 
+<P>seen from client:
+<P>
+<PRE>
+telnet connect request 
+ 
+12:56:05.427252 client2.1038 > lvs.telnet: S 1170880662:1170880662(0) win 32120 &lt;mss 1460,sackOK,timestamp 6539901[|tcp]> (DF) [tos 0x10]
+12:56:05.427949 client2.1038 > lvs.telnet: . ack 416490630 win 32120 &lt;nop,nop,timestamp 6539901 161874539> (DF) [tos 0x10]
+12:56:05.431752 client2.1038 > lvs.telnet: P 0:27(27) ack 1 win 32120 &lt;nop,nop,timestamp 6539902 161874539> (DF) [tos 0x10]
+
+client replying to real-server's auth request
+
+12:56:05.465152 client2.auth > lvs.1377: S 1159930752:1159930752(0) ack 417813448 win 32120 &lt;mss 1460,sackOK,timestamp 6539905[|tcp]> (DF)
+12:56:05.465405 lvs.1377 > client2.auth: R 417813448:417813448(0) win 0
+12:56:08.464671 client2.auth > lvs.1377: S 1162930275:1162930275(0) ack 417813448 win 32120 &lt;mss 1460,sackOK,timestamp 6540205[|tcp]> (DF)
+12:56:08.464901 lvs.1377 > client2.auth: R 417813448:417813448(0) win 0
+
+6 second delay then trying again 
+
+12:56:14.466048 client2.auth > lvs.1377: S 1168931649:1168931649(0) ack 417813448 win 32120 &lt;mss 1460,sackOK,timestamp 6540805[|tcp]> (DF)
+12:56:14.466275 lvs.1377 > client2.auth: R 417813448:417813448(0) win 0
+
+client login to LVS  
+
+12:56:15.501272 client2.1038 > lvs.telnet: . ack 13 win 32120 &lt;nop,nop,timestamp 6540908 161875546> (DF) [tos 0x10]
+12:56:15.503946 client2.1038 > lvs.telnet: P 27:125(98) ack 52 win 32120 &lt;nop,nop,timestamp 6540909 161875546> (DF) [tos 0x10]
+12:56:15.509024 client2.1038 > lvs.telnet: P 125:128(3) ack 55 win 32120 &lt;nop,nop,timestamp 6540909 161875547> (DF) [tos 0x10]
+12:56:15.538816 client2.1038 > lvs.telnet: P 128:131(3) ack 88 win 32120 &lt;nop,nop,timestamp 6540912 161875550> (DF) [tos 0x10]
+12:56:15.551836 client2.1038 > lvs.telnet: . ack 90 win 32120 &lt;nop,nop,timestamp 6540914 161875550> (DF) [tos 0x10]
+12:56:15.571837 client2.1038 > lvs.telnet: . ack 106 win 32120 &lt;nop,nop,timestamp 6540916 161875551> (DF) [tos 0x10]
+</PRE>
+<P>Here's what it looks like on the real-server 
+(this is a different connection from the above sample, so the times are not the same).
+<P>
+<PRE>
+real-server receives telnet request on VIP
+12:50:58.049909 client2.1040 > lvs.telnet: S 1605709966:1605709966(0) win 32120 &lt;mss 1460,sackOK,timestamp 6580274[|tcp]> (DF) [tos 0x10]
+12:50:58.051263 lvs.telnet > client2.1040: S 862075007:862075007(0) ack 1605709967 win 32120 &lt;mss 1460,sackOK,timestamp 161914907[|tcp]> (DF)
+12:50:58.051661 client2.1040 > lvs.telnet: . ack 1 win 32120 &lt;nop,nop,timestamp 6580274 161914907> (DF) [tos 0x10]
+12:50:58.052819 client2.1040 > lvs.telnet: P 1:28(27) ack 1 win 32120 &lt;nop,nop,timestamp 6580274 161914907> (DF) [tos 0x10]
+12:50:58.053036 lvs.telnet > client2.1040: . ack 28 win 32120 &lt;nop,nop,timestamp 161914907 6580274> (DF)
+
+real-server initiates auth request from VIP to client:auth
+
+12:50:58.088510 lvs.1379 > client2.auth: S 852509908:852509908(0) win 32120 &lt;mss 1460,sackOK,timestamp 161914911[|tcp]> (DF)
+12:51:01.083659 lvs.1379 > client2.auth: S 852509908:852509908(0) win 32120 &lt;mss 1460,sackOK,timestamp 161915211[|tcp]> (DF)
+
+real-server waits for timeout (about 8secs), sends final request to client:auth
+
+12:51:07.083164 lvs.1379 > client2.auth: S 852509908:852509908(0) win 32120 &lt;mss 1460,sackOK,timestamp 161915811[|tcp]> (DF)
+
+telnet replies from real-server continue, login occurs
+
+12:51:08.117727 lvs.telnet > client2.1040: P 1:13(12) ack 28 win 32120 &lt;nop,nop,timestamp 161915914 6580274> (DF)
+12:51:08.118142 client2.1040 > lvs.telnet: . ack 13 win 32120 &lt;nop,nop,timestamp 6581281 161915914> (DF) [tos 0x10]
+</PRE>
+<P>
+<P>
+<H2><A NAME="ss16.5">16.5 There are solutions to identd problem in some cases</A>
+</H2>
+
+<P>
+<P>
+<H3>Director is VS-NAT</H3>
+
+<P>
+<P>In an LVS, authd on the real-server will be able to connect to the client if -
+<P>VS-NAT, the real-servers are on public IPs (not likely, since you usually
+hide the real-servers from public view and they'll be on 192.168.x.x or
+10.x.x.x networks)
+<P>VS-NAT, and high ports are nat'ed out with a command like
+<P>
+<PRE>
+director:/etc/lvs# ipchains -A forward -j MASQ -s 192.168.1.0/24 -d 0.0.0.0/0
+</PRE>
+<P>You usually don't want to blanket masquerade all ports. You really
+only want to masquerade ports that are being LVS'ed (so you can still
+get to the other services) in which case, for each service being 
+LVS'ed, you to use ipchains rules like
+<P>
+<PRE>
+director:# ipchains -A forward -p tcp -j MASQ -s realserver1 telnet -d 0.0.0.0/0
+</PRE>
+<P>Since the auth client (on your telnet server) is connecting from a high port
+on the server, a better ipchains rule which will allow auth to work when the
+real-servers are on private IPs.
+<P>
+<PRE>
+director:# ipchains -A forward -p tcp -j MASQ -s realserver1 1024:65535 -d 0.0.0.0/0
+</PRE>
+<P>
+<H3>VS-DR, VS-Tun, 2.2.x kernel directors</H3>
+
+<P>
+<P>There is no solution for VS-DR for 2.2.x directors. 
+The auth client on the real-server initiates the connection from the VIP. 
+There is no way for a packet from VIP:high port to get a
+reply through the LVS because 
+<P>FIXME
+<P>
+<UL>
+<LI>the incoming packet from the client on the internet is destined for a non-LVS'ed high port 
+</LI>
+<LI>the incoming packet is not a connect request. 
+</LI>
+<LI>the incoming packet is not associated with an established connection.</LI>
+</UL>
+<P>The reply from the LVS client will be dropped. 
+<P>
+<H3>VS-DR, VS-Tun, 2.4.x kernel directors</H3>
+
+<P>
+<P>Transparent proxy in 2.4 is different to 2.2 
+(see section on 
+<A HREF="LVS-HOWTO-15.html#identd_with_2.4_TP">identd with 2.4 TP</A>).
+You should be able to 
+<A HREF="LVS-HOWTO-15.html#identd_with_TP_real-servers">masquerade the identd client's request on the real-server</A>.
+<P>
+<P>
+<H2><A NAME="ss16.6">16.6 Turn off tcpwrappers</A>
+</H2>
+
+<P>
+<P>inetd.conf will have a line like
+<P>
+<PRE>
+telnet stream tcp nowait root /usr/sbin/tcpd in.telnetd
+</PRE>
+<P>change this to 
+<P>
+<PRE>
+telnet stream tcp nowait root /usr/sbin/in.telnetd in.telnetd
+</PRE>
+<P>and re-HUP inetd.
+<P>
+<H2><A NAME="identd_and_sendmail"></A> <A NAME="ss16.7">16.7 Identd and smtp/pop/qmail</A>
+</H2>
+
+<P>
+<P>(This is older stuff from the mailing list when the problem first
+came up)
+<P>Problem: In the case of identd, the smtpd on a real-server says to
+identd "give me the name of the owner of the process on IP:port
+that is asking me to accept mail". If identd thinks it is running
+on the RIP rather than the VIP and, as is most likely, RIP is not
+routable from the outside world, mail on the real-server will
+hang. If identd is running on the VIP, then replies will probably
+return to another real-server and mail will still hang.
+<P>The converse case, of sending mail from the LVS, has the smtp
+server out in internetland asking the LVS for the name of the
+owner of the process running on the VIP sending him mail.  If
+identd is clustered, then the request will in all probability go
+to another real-server. This seems equally intractable at the
+moment.
+<P>Originally the problem was raised by
+<PRE>
+From: Chris Kennedy &lt;tt/ckennedy@iland.net/
+Subject: SMTP, POP3 using Qmail and Ident, also using Solaris as real servers
+</PRE>
+<P>I have setup a virtual server using the Linux 2.2 patch and 3
+Sun Ultras as the actual servers. It has crashed twice, though
+possibly from running bind on the Virtual Server, since it was
+right when I started it up (bind) that the virtual server would
+crash.
+<P>The major problem I am having is a timeout for Ident requests
+on POP3 and SMTP ports which seem to be confused. When looking at
+the problem with tcpdump on the virtual server and the real
+servers the vserver seems to do the following:
+<P>
+<PRE>
+13:41:48.635985 10.0.0.1.4658 > vserver.net.smtp: . ack 2764990963 win 8760
+13:41:48.636030 10.0.0.1.4658 > vserver.net.smtp: . ack 1 win 8760
+13:41:48.658875 10.0.0.1.auth > vserver.net.48981: R 0:0(0) ack 2765099549
+win 0  &lt;&lt;&lt;&lt;&lt;&lt;
+13:41:52.143790 10.0.0.1.auth > vserver.net.48981: R 0:0(0) ack 1 win 0
+&lt;&lt;&lt;&lt;&lt;&lt;
+13:41:58.144210 10.0.0.1.auth > vserver.net.48981: R 0:0(0) ack 1 win 0
+&lt;&lt;&lt;&lt;&lt;&lt;
+</PRE>
+<P>The Ident, or auth port on the client machine trying to connect
+back to the vserver is where it will pause for about 10-15
+seconds then connect just fine. I believe this may be qmail
+specific since a server funning sendmail will not have this
+problem and ident seems to be used by qmail more than it or
+something.
+<P>No-one answered, then months later...
+<P>
+<PRE>
+(Ted)
+>     I currently have HTTP loadbalanced just fine with the LinuxDirector.
+> I've setup SMTP in the same fashion, and I don't have as much luck.
+</PRE>
+<P>(Lars)
+Check if your system (tcpwrapper or sendmail) is doing a NS
+lookup before accepting the connection or trying to connect to
+ident.
+<P>
+<PRE>
+From: Chris Kennedy &lt;tt/ckennedy@iland.net/
+Subject: Re: SMTP -- very slow connection
+</PRE>
+<P>I had the same problem with the Direct Routing and SMTP and POP3.
+It looked like a problem with the Ident lookup to the server by
+the client, it was what always was occurring during that time out
+period.  I saw this while doing tcpdumps on the virtual server
+where the client would just keep asking for Ident lookups to the
+Virtual IP address which are from the client port 113 to a random
+port above 1023 on the virtual server.  I can see how this is
+tricky with the direct routing method since this traffic should
+be sent on to the real server but is not.  I sort of gave up on
+Direct Routing for now since this looks pretty hard to fix if it
+really is Ident and the client requirements getting in the way.
+<P>
+<PRE>
+
+(Ted)
+>
+> I'm connecting directly to the IP. But just to be sure, I'll add an entry to
+> the nameserver for that particular IP -- in both forward and reverse
+> lookups...........done.....
+>
+> And it still does the same thing. :(
+>
+> Understand that the thirty seconds are *AFTER* the connection... Telnet
+> connects, gives me the escape character, and sits. If it was a nameservice
+> thing, I'd imagine it'd sit before it connected.
+>
+> &lt;?> I'd actually be happier if it wasn't connecting. :) Then I'd know there
+> was definitely something I needed to fix between me and the real machine.
+> But when it connects and THEN has trouble... I'm lost. :(
+</PRE>
+<P>From: Michael Baird <CODE>mike@tc3net.com</CODE>
+<PRE>
+> Sound's like an issue with ident lookup's, you probably aren't
+> clustering IDENT, you can 1) cluster identd, or edit your sendmail.cf
+> file and set the value
+> 0 Timeout.ident=0
+</PRE>
+<P>(Ted)
+Great idea. That was it. I turned off ident in sendmail and
+things worked fine.
+<P>However, I don't want to turn of ident in sendmail, and I figure
+other things might want ident too... so I want to cluster ident.
+<P>Clustering ident didn't help. I clustered tcp port 113 to both
+servers. (I even tried "loadbalancing" 25 and 113 just to ONE
+server -- that way it'd always hit the same server)... And that
+didn't work. I got the same results -- telnet to port 25...
+connect... thirty seconds... and then sendmail would enter
+command mode.
+<P>Any ideas? Do I have to loadbalance anything else besides tcp 113
+for identd to work?
+<P>Would like to add more info here...
+<P>Why is identd run with smtp (any other reason other than
+wanting to know who is sending me the mail?)
+<P>do you have to turn identd off in smtp to get LVS smtp to work?
+<P>has anyone LVS'ed identd? (I'd imagine you wouldnt
+neccessarily get the ident from the same machine running the process for
+which you want the ident)
+<P>anything else?
+<P>
+<HR>
+<A HREF="LVS-HOWTO-17.html">Next</A>
+<A HREF="LVS-HOWTO-15.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc16">Contents</A>
+</BODY>
+</HTML>

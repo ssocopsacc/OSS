@@ -1,0 +1,1643 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO: Details of LVS operation</TITLE>
+ <LINK HREF="LVS-HOWTO-19.html" REL=next>
+ <LINK HREF="LVS-HOWTO-17.html" REL=previous>
+ <LINK HREF="LVS-HOWTO.html#toc18" REL=contents>
+</HEAD>
+<BODY>
+<A HREF="LVS-HOWTO-19.html">Next</A>
+<A HREF="LVS-HOWTO-17.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc18">Contents</A>
+<HR>
+<H2><A NAME="s18">18. Details of LVS operation</A></H2>
+
+<P>
+<P>
+<H2><A NAME="Hash_Table"></A> <A NAME="ss18.1">18.1 Director Hash Table</A>
+</H2>
+
+<P>
+<P>The director maintains a hash table of connections marked with
+<PRE>
+&lt;CIP, CPort, VIP, VPort, RIP, RPORT>
+</PRE>
+<P>where
+<UL>
+<LI>        CIP:    Client IP address</LI>
+<LI>        CPort:  Client Port number</LI>
+<LI>        VIP:    Virtual IP address</LI>
+<LI>        VPort:  Virtual Port number</LI>
+<LI>        RIP:    RealServer IP address</LI>
+<LI>        RPort:  RealServer Port number.</LI>
+</UL>
+<P>The hash table speeds up the connection lookup and
+keeps state so that packets belonging to a connection
+from the client will be sent to the allocated real-server.
+<P>
+<P>Horms <CODE>horms@vergenet.net</CODE> said:
+<PRE>
+>   When a connection is recieved by an IPVS server and forwarded
+>   (by whatever means) to a back-end server at what stage is
+>   this connection entered into the IPVS table. It is before or
+>   as the packet is sent to the back-end server or delayed
+>   until after the 3 way handshake is complete.
+</PRE>
+<P>(Lars)
+The first packet is when the connection is assigned to a real server, thus it
+must be entered into the table then, otherwise the 3 way handshake would
+likely hit 3 different real servers.
+<P>
+<PRE>
+> It has been alleged that IBMs Net Director waits until
+> the completion of the three way handshake to avoid the
+> table being filled up in the case of a SYN flood. To
+> my mind the existing SYN flood protection in Linux should
+> protect the IPVS table in any case and the connection
+> needs to be in the IPVS table to enable the 3 way handshake
+> to be completed.
+</PRE>
+<P>
+<P>(Wensong)
+There is state management in connection entries in the IPVS table. The
+connection in different states has different timeout value, for
+example, the timeout of the SYN_RECV state is 1 minute, the timeout of
+the ESTABLISHED state is 15 minutes (the default). Each connection
+entry occupy 128 bytes effective memory. Supposing that there is 128
+Mbytes free memory, the box can have 1 million connection entries. The
+over 16,667 packet/second rate SYN flood can make the box run out of
+memory, and the syn-flooding attacker probably need to allocate T3
+link or more to perform the attack. It is difficult to syn-flood a
+IPVS box. It would be much more difficult to attach a box with more
+memory.
+<P>
+<PRE>
+> I assume that the timeout is tunable, though reducing the
+> timeout could have implications for prematurely
+> dropping connections. Is there a possibility of implementing
+> random SYN drops if too many SYN are received as I believe
+> is implemented in the kernel TCP stack.
+</PRE>
+<P>Yup, I should implement random early drop of SYN entries long time ago as
+Alan Cox suggested. Actually, it would be simple to add this feature into
+the existing IPVS code, because the slow timer handler is activated every
+second to collect stale entries. I just need to some code to that handler,
+if over 90% (or 95%) memory is used, run drop_random_entry to randomly
+tranverse 10% (or 5%) entries and drop the SYN-RCV entries in them.
+<P>
+<PRE>
+> A second, related question is if a packet is forwarded to
+> a server, and this server has failed and is sunsequently
+> removed from the available pool using something like
+> ldirectord. Is there a window where the packet
+> can be retransmitted to a second server. This would
+> only really work if the packet was a new connection.
+</PRE>
+<P>Yes, it is true. If the primary load balaner fails over, all the
+established connections will be lost after the backup takes over. We
+probably need to investigate how to exchange the state (connection
+entries) periodically between the primary and the backup without too
+much performance degradation.
+<P>
+<PRE>
+> If persistent connections are being used and a client is
+> cached but doesn't have any active connections does
+> this count as a connection as far as load balancing,
+> particularly lc and wlc is concerned. I am thinking
+> no. This being the case, is the memory requirement for each
+> client that is cached but has no connections 128bytes as
+> per the memory required for a connection.
+</PRE>
+<P>The reason that the existing code uses one template and creates different
+entries for different connections from the same client is to manage the
+state of different connections from the same client, and it is easy to
+seemlessly add into existing IP Masquerading code. If only one template
+is used for all the connections from the same client, the box receives a
+RST packet and it is impossible to identify from which connection.
+<P>
+<P>Date: 24 Dec 2000
+From: Julian Anastasov <CODE>ja@ssi.bg</CODE>
+<PRE>
+> We using Hash Table to record an established network connection. 
+> How do we know the data transmission by one conection is over
+> and when should we delete it from the Hash Table?
+</PRE>
+<P>OK, here we'll analyze the LVS and mostly the MASQ transition
+tables from net/ipv4/ip_masq.c. LVS support adds some extensions to
+the original MASQ code but the handling is same.
+<P>First, we have three protocols handled: TCP, UDP and ICMP.
+The first one (TCP) has many states and with different timeout values,
+most of them set to reasonable values corresponding to the
+recommendations from some TCP related rfc* documents. For UDP and ICMP
+there are other timeout values that try to keep the both ends connected
+for reasonable time without creating many connection entries for each
+packet.
+<P>There are some rules that keep the things working:
+<P>- when a packet is received for an existing connection or when a new
+connection is created a timer is started/restarted for this connection.
+The timeout used is selected according to the connection state.
+If a packet is received for this connection (from one of the both ends)
+the timer is restarted again (and may be after a state change). If no
+packet is received during the selected period, the masq_expire()
+function is called to try to release the connection entry. It is
+possible masq_expire() to restart the timer again for this connection
+if it is used from other entries. This is the case for the templates
+used to implement the persistent timeout. They occupy one entry
+with timer set to the value of the persistent time interval. There
+are other cases, mostly used from the MASQ code, where helper
+connections are used and masq_expire() can't release the expired
+connection because it is used from others.
+<P>- according to the direction of the packet we distinguish two cases:
+INPUT where the packet comes in demasq direction (from the world)
+and OUTPUT where the packet comes from internal host in masq direction.
+<P>masq. What does "masq direction" mean for packets that are
+not translated using NAT (masquerading), for example, for
+Direct Routing or Tunneling? The short answer is: there is no
+masq direction for these two forwarding methods. It is explained
+in the LVS docs. In short, we have packets in both directions
+when NAT is used and packets only in one direction (INPUT) when
+DR or TUN are used. The packets are not demasqueraded for DR and TUN
+method. LVS just hooks the LOCAL_IN chain as the MASQ code is
+privileged in Linux 2.2 to inspect the incoming traffic when the
+routing decides that the traffic must be delivered locally. After some
+hacking, the demasquerading is avoided for these two methods, of course,
+after some changes in the packet and in its next destination - the
+real servers. Don't forget that without LVS or MASQ rules, these packets
+hit the local socket listeners.
+<P>How are the connection states changed? Let's analyze for
+example the masq_tcp_states table (we analyze the TCP states here,
+UDP and ICMP are trivial). The columns specify the current
+state. The rows explain the TCP flag used to select the next TCP
+state and its timeout. The TCP flag is selected from masq_tcp_state_idx().
+This function analyzes the TCP header and decides which flag (if many
+are set) is meaningful for the transition. The row (flag index) in the
+state table is returned. masq_tcp_state() is called to change ms->state
+according to the current ms->state and the TCP flag looking in the
+transition table. The transition table is selected according to
+the packet direction: INPUT, OUTPUT. This helps us to react differently
+when the packets come from different directions. This is explained later,
+but in short the transitions are separated in such way (between INPUT
+and OUTPUT) that transitions to states with longer timeouts are
+avoided, when they are caused from packets coming from the world.
+Everyone understands the reason for this: the world can flood us with
+many packets that can eat all the memory in our box. This is the
+reason for this complex scheme of states and transitions. The
+ideal case is when there is no different timeouts for the different
+states and when we use one timeout value for all TCP states as in UDP
+and ICMP. Why not one for all these protocols? The world is not
+ideal. We try to give more time for the established connections and
+if they are active (i.e. they don't expire in the 15 mins we give them
+by default) they can live forever (at least to the next kernel
+crash^H^H^H^H^Hupgrade).
+<P>How does LVS extend this scheme? For the DR and TUN method
+we have packets coming from the world only. We don't use the OUTPUT
+table to select the next state (the director doesn't see packets 
+returning from the internal hosts). We need to relax our INPUT rules 
+and to switch to the state required by the external hosts :( We
+can't derive our transitions from the trusted internal hosts. 
+We change the state only based on the packets coming from the
+the clients. When we use the INPUT_ONLY table (for DR and TUN) 
+the LVS expects a SYN packet and then an ACK packet from the client 
+to enter the established state. The director enters the established
+state after a two packet sequence from the client without knowing
+what happens in the real server, which can drop the packets (if they 
+are invalid) or establish a connection. When an attacket sends
+SYN and ACK packets to flood a VS-DR or VS-Tun director, many 
+connections are established state. Each each established
+connection will allocate resources (memory) for 15 mins by default.
+If the attacker uses many different source addresses for this
+attack the director will run out of memory.
+<P>For these two methods LVS introduces one more transition
+table: the INPUT_ONLY table which is used for the connections created
+for the DR and TUN forwarding methods. The main goal: don't enter
+established state too easily - make it harder.
+<P>Oh, maybe you're just reading the TCP specifications. There are
+sequence numbers that the both ends attach to each TCP packet. And you
+don't see the masq or LVS code to try to filter the packets according to
+the sequence numbers. This can be fatal for some connections as the
+attacker can cause state change by hitting a connection with RST
+packet, for example (ES->CL). The only info needed for this kind of
+attack is the source and destination IP addresses and ports. Such kind
+of attacks are possible but not always fatal for the active connections.
+The MASQ code tries to avoid such attacks by selecting minimal timeouts
+that are enough for the active connections to resurrect. For example,
+if the connection is hit by TCP RST packet from attacker, this
+connection has 10 seconds to give an evidence for its existance
+by passing an ACK packet through the masq box.
+<P>To make the things complex and harder for the attacker to
+block a masq box with many established connections, LVS extends
+the NAT mode (INPUT and OUTPUT tables) by introducing internal 
+server driven state transitions: the secure_tcp defense
+strategy. When enabled, the TCP flags in the client's packet can't
+trigger switching to established state without acknowledgement from
+the internal end of this connection. secure_tcp changes the
+transition tables and the state timeouts to achieve this goal.
+The mechanism is simple: keep the connection is SR state with
+timeout 10 seconds instead of the default 60 seconds when the
+secure_tcp is not enabled.
+<P>This trick depends on the different
+defense power in the real servers. If they don't implement SYN
+cookies and so sometimes don't send SYN+ACK (because the incoming
+SYN is dropped from their full backlog queue), the connection expires
+in LVS after 10 seconds. This action assumes that this is a connection 
+created from attacker, since one SYN packet is not followed 
+by another, as part from the retransmissions provided from 
+the client's TCP stack.
+<P>We give 10 seconds to the real server to reply with
+SYN+ACK (even 2 are enough). If the real server implements SYN cookies
+the SYN+ACK reply follows the SYN request immediatelly. But if there
+are no SYN cookies implemented the SYN requests are dropped when the
+backlog queue length is exceeded. So secure_tcp is by default useful
+for real servers that don't implement SYN cookies. In this case the
+LVS expires the connections in SYN state in a short time, releasing the
+memory resources allocated from them. In any case, secure_tcp does
+not allow switching to established state by looking in the clients packets.
+We expect ACK from the real-server to allow this transition to EST
+state.
+<P>The main goal of the defense strategies is to keep the LVS
+box with more free memory for other connections. The defense for the
+real servers can be build in the real servers. But may be I'll propose
+to Wensong to add a per-connection packet rate limit. This will help
+against attacks that create small number of connections but send many
+packets and by this way load the real servers dramatically. May be two
+values: rate limit for all incoming packets and rate limit per
+connection.
+<P>The good news is that all these timeout values can be
+changed in the LVS setup, but only when the secure_tcp strategy
+is enabled. An SR timeout of 2 seconds is a good value for
+LVS clusters when real-servers don't implement SYN cookies:
+if there is no SYN+ACK from the real-server then drop the entry 
+at the director.
+<P>The bad news is of course, for the DR and TUN methods.
+The director doesn't see the packets returning from the real-servers
+and VS-DR and VS-Tun forwarding can't use the internal server driven 
+mechanism. There are other defense strategies that help when 
+using these methods. All these defense strategies keep the
+director with memory free for more new connections. There is no
+known way to pass only valid requests to the internal servers.
+This is because the real-servers don't provide information to
+the director and we don't know which packet is dropped or accepted
+from the socket listener. We can know this only by receiving an ACK
+packet from the internal server when the three-way handshake is
+completed and the client is identified from the internal server
+as a valid client, not as spoofed one. This is possible only for 
+the NAT method.
+<P>Julian Anastasov <CODE>ja@ssi.bg</CODE>
+<P><CODE>ksparger@dialtoneinternet.net</CODE> (29 Jan 2001) rephrases this
+by saying the VS-NAT is layer-3 aware. 
+For example, NAT can 'see' if a real server responds to a packet it's been
+sent or not, since it's watching all of the traffic anyway.  If the
+server doesn't respond within a certain period of time, the director
+can automatically route that packet to another server.  
+LVS doesn't support this right now, but, NAT would be the 
+more likely candidate to support it in
+the future, as NAT understands all of the IP layer concepts, and DR
+doesn't necessarily.
+<P>(Julian)
+<P>Someone must put back the real server when it is alive. This
+sounds like a user space job. The traffic will not start until we send
+requests. We have to send L4 probes to the real server (from the user
+space) or to probe it with requests (LVS from kernel space)?
+<P>
+<H2><A NAME="ss18.2">18.2 Port range limitations</A>
+</H2>
+
+<P>
+<P>Wayne <CODE>wayne@compute-aid.com</CODE> 14 May 2000, 
+<P>
+<BLOCKQUOTE>
+If running a load balancer tester, say the one from IXIA to
+issue connections to 100 powerful web servers, would all the parameters
+in Julian's description need to be changed, or it should not be a problem
+for having many many connections from a single tester?
+</BLOCKQUOTE>
+<P>(Julian)
+<P>There is no limit for the connections from the internal hosts.
+Currently, the masquerading allows one internal host to create 40960
+TCP connections. But the limit of 4096 connections to one external service
+is still valid.
+<P>If 10 internal hosts try to connect to one external
+service, each internal host can create 4096/10 => &nbsp;409 connections.
+<P>For UDP the problem is sometimes worse. It depends on
+the /proc/sys/net/ipv4/ip_masq_udp_dloose value.
+<P>(Joe - which is internal and which is external here? The client, the real-servers?)
+<P>This is a plain masquerading so internal and external
+refer to masquerading. These limits are not for the LVS connections,
+they are only for the 2.2 masquerading.
+<P>
+<P>
+<PRE>
+
+                         / 65095        Internal Servers
+External Server:PORT    -  ...   MADDR --------------------
+                         \ 61000
+</PRE>
+<P>When many internal clients try to connect to same external
+real service, the total number of TCP connections from one MADDR
+to this remote service can be 4096 because the masq uses only 4096
+masq ports by default. This is a normal TCP limit, we distinguish
+the TCP connections by the fact they use different ports, nothing
+more. And the masq code is restricted by default to use the above
+range of 4096 ports.
+<P>In the whole masquerading table there is a space only for
+40960 TCP, 40960 UDP and 40960 ICMP connections. These values can
+be tuned by changing ip_masq.c:PORT_MASQ_MUL. The PORT_MASQ_MUL
+value simply determines the recommended length of one row in the
+masq hash table for connections but in fact it is involved in
+the above connection limits. It is recommended that the busy masq
+routers must increase this value. May be the 4096 masq port range
+too. This involves squid servers behind masq router.
+<P>LVS uses another table without limits. For LVS setups the
+same TCP restrictions apply but for the external clients:
+<P>
+<PRE>
+        4999 \
+Client       - VIP:VPORT LVS Director
+        1024 /
+</PRE>
+<P>The limit of client connections to one VIP:VPORT is limited
+to the number of used client ports from same Client IP.
+<P>The same restrictions apply to UDP. UDP has the same port
+ranges. But for UDP the 2.2 kernel can apply different restrictions.
+They are caused from some optimizations that try to create one UDP
+entry for many connections. The reason for this is the fact that
+one UDP client can connect to many UDP servers while this is not
+common for TCP.
+<P>
+<H2><A NAME="DoS"></A> <A NAME="ss18.3">18.3 DoS</A>
+</H2>
+
+<P>
+<P>LVS is vunerable to DoS by an attacker making repeated connection requests.
+Eventually the director will run out of memory. 
+This will take a while but an attacker has plenty of time if you are asleep. 
+As well with VS-DR and VS-Tun, the director doesn't have access to
+the TCPIP tables in the real-server(s) which show whether a connection has closed
+(see 
+<A HREF="#Hash_Table">director hash table</A>).
+The director can only guess that the connection has really closed, and
+does so using timeouts.
+<P>For information on DoS strategies for LVS see 
+<A HREF="http://www.linuxvirtualserver.org/defense.html">DoS page</A>.
+<P>On Wed, 14 Feb 2001, Laurent Lefoll wrote:
+From: Laurent Lefoll <CODE>Laurent.Lefoll@mobileway.com</CODE>
+<P>
+<PRE>
+> If I am not misunderstanding something, the variable
+> /proc/sys/net/ipv4/vs/timeout_established gives the time a TCP connection can be
+> idle and after that the entry corresponding to this connection is cleared. My
+> problem is that it seems that sometimes it's not the case. For example I have a
+> system (2.2.16 and ipvs 0.9.15) with  /proc/sys/net/ipv4/vs/timeout_established
+> = 480 but the entries are created with a real timeout of 120 ! On another system
+</PRE>
+<P>From: Julian Anastasov <CODE>ja@ssi.bg</CODE>
+<P>Read 
+<A HREF="http://www.linuxvirtualserver.org/defense.html">The secure_tcp defense strategy</A> where the timeouts are explained.
+They are valid for the defense strategies only. 
+For TCP EST state you
+need to read the ipchains man page.
+<P>For more explanation of the secure_tcp strategy also see the
+<A HREF="#Hash_Table">explanation of the director's hash table</A>.
+<P>
+<PRE>
+> when I play with "ipchains -M -S > [value] 0 0"  
+> the variable /proc/sys/net/ipv4/vs/timeout_established is modified
+> even when /proc/sys/net/ipv4/vs/secure_tcp is set to 0, 
+> so I'm not using the secure TCP defense. 
+> The "real" timeout is of course set to [value] when a new TCP connection appears.
+> So should I understand that timeout_established, timeout_udp,... are always
+> modified by  "ipchains -M -S ...." whatever I use or not secure TCP defense but
+> if secure-tcp is set to 0, other variables give the timeouts to use ? If so, are
+> these variable accessible or how to check their value ?
+</PRE>
+<P>ipchains -M -S modifies the two TCP and the UDP timeouts in
+the two secure_tcp modes: off and on. So, ipchains changes the three
+timeout_XXX vars. When you change the timeout_* vars you change them for
+secure_tcp=on only. Think for the timeouts as you have two sets: for
+the two secure_tcp modes: on and off. ipchains changes the 3 vars in
+the both sets. While secure_tcp is off changing timeout_* does not
+affect the connection timeouts. They are used when secure_tcp is on.
+<P>(Joe: `ipchains 0 value 0`, where value=10 does not change the timeout values or number
+of entries seen in InActConn or seen with netstat -M, or ipchains -M -L -n). 
+<P>LVS has its own tcpip state table, when in secure_tcp mode.
+<P>
+<P>carl.huang
+<BLOCKQUOTE>
+what are the vs_tcp_states[ ] and vs_tcp_states_dos[ ] elements in the
+in ip_vs_conn structure for?
+</BLOCKQUOTE>
+<P>Roberto Nibali <CODE>ratz@tac.ch</CODE> 16 Apr 2001
+<P>The vs_tcp_states[] table is the modified state transition table for the
+TCP state machine. The vs_tcp_states_dos[] is a yet again modified state
+table in case we are under attack and secure_tcp is enabled. It is tigher
+but not conforming to the RFC anymore. Let's take an example how you can
+read it: 
+<P>
+<PRE>
+static struct vs_tcp_states_t vs_tcp_states [] = {
+/*      INPUT */
+/*        sNO, sES, sSS, sSR, sFW, sTW, sCL, sCW, sLA, sLI, sSA */
+/*syn*/ {{sSR, sES, sES, sSR, sSR, sSR, sSR, sSR, sSR, sSR, sSR }},
+/*fin*/ {{sCL, sCW, sSS, sTW, sTW, sTW, sCL, sCW, sLA, sLI, sTW }},
+/*ack*/ {{sCL, sES, sSS, sES, sFW, sTW, sCL, sCW, sCL, sLI, sES }},
+/*rst*/ {{sCL, sCL, sCL, sSR, sCL, sCL, sCL, sCL, sLA, sLI, sSR }},
+</PRE>
+<P>The elements 'sXX' mean state XX, so for example, sFW means TCP state
+FIN_WAIT, sSR means TCP state SYN_RECV and so on. Now the table describes
+the state transition of the TCP state machine from one TCP state to 
+another one after a state event occured. For example: Take row 2 starting
+with sES and ending with sCL. At the first, commentary row, you see the
+incoming TCP flags (syn,fin,ack,rst) which are important for the state
+transition. So the rest is easy. Let's say, you're in row 2 and get a fin
+so you go from sES to sCW, which should by conforming to RFC and Stevens.
+<P>Short illustration:
+<P>
+<PRE>
+/*           , sES, 
+/*syn*/ {{   ,    ,
+/*fin*/ {{   , sCW,
+</PRE>
+<P>It was some months ago last year when Wensong, Julian and me discussed
+about a security enhancement for the TCP state transition and after some
+heavy discussion they implemented it. So the second table vs_tcp_states_dos[]
+was born. (look in the mailing list in early 2000).
+<P>
+<H2><A NAME="ActConn"></A> <A NAME="ss18.4">18.4 Active/Inactive connnection</A>
+</H2>
+
+<P>
+<P>The output of ipsvadm lists connections, either as 
+<UL>
+<LI>ActConn - in ESTABLISHED state</LI>
+<LI>InActConn - any other state</LI>
+</UL>
+<P>Entries in the ActConn column come from
+<UL>
+<LI>service with an established connection. 
+Examples of services which hold connections in the ESTABLISHED state
+long enough to see with ipvsadm are telnet and ftp (port 21).</LI>
+</UL>
+<P>Entries in the InActConn column come from
+<UL>
+<LI>Normal operation
+<UL>
+<LI>Services like http (in non-persistent <EM>i.e.</EM> HTTP /1.0 mode)
+or ftp-data(port 20)
+which close the connections as soon as the hit/data (html page, or gif etc)
+has been retrieved (&lt;1sec).
+You're unlikely to see anything
+in the ActConn column with these LVS'ed services. 
+You'll see an entry in the InActConn 
+column untill the connection times out. 
+If you're getting 1000connections/sec and 
+it takes 60secs for the connection to time out (the normal timeout), 
+then you'll have 60,000 InActConns.
+This number of InActConn is quite normal. 
+If you are running an e-commerce site with 300secs of persistence,
+you'll have 300,000 InActConn entries. 
+Each entry takes 128bytes (300,000 entries is about 40M of memory,
+make sure you have enough RAM for your application).
+The number of ActConn might be very small.</LI>
+</UL>
+</LI>
+<LI>Pathological Conditions (<EM>i.e.</EM> your LVS is not setup properly)
+<UL>
+<LI>identd delayed connections: <P>The 3 way handshake to establish a connection takes
+only 3 exchanges of packets (<EM>i.e.</EM> it's quick on any
+normal network) and you won't be quick enough with ipvsadm
+to see the connection in the states before it becomes ESTABLISHED.
+However if the service on the real-server is under 
+<A HREF="LVS-HOWTO-16.html#authd">identd</A>, you'll see an InActConn entry
+during the delay period.
+</LI>
+<LI>Incorrect routing 
+(usually the wrong default gw for the real-servers):<P>
+<P>In this case the 3 way handshake will never complete, the connection will hang,
+and there'll be an entry in the InActConn column.
+</LI>
+</UL>
+</LI>
+</UL>
+<P>Usually the number of InActConn will be larger or very much larger than the number
+of ActConn.
+<P>Here's a VS-DR LVS, setup for ftp, telnet and http, 
+after telnetting from the client 
+(the client command line is at the telnet prompt).
+<P>
+<PRE>
+director:# ipvsadm
+IP Virtual Server version 0.2.8 (size=4096)                    
+Prot LocalAddress:Port Scheduler Flags                         
+-> RemoteAddress:Port               Forward Weight ActiveConn InActConn
+TCP  lvs2.mack.net:www rr
+-> bashfull.mack.net:www            Route   1      0          0         
+-> sneezy.mack.net:www              Route   1      0          0         
+TCP  lvs2.mack.net:0 rr persistent 360
+-> sneezy.mack.net:0                Route   1      0          0         
+TCP  lvs2.mack.net:telnet rr
+-> bashfull.mack.net:telnet         Route   1      1          0         
+-> sneezy.mack.net:telnet           Route   1      0          0
+</PRE>
+<P>showing the ESTABLISHED telnet connection (here to real-server bashfull).
+<P>Here's the output of netstat -an | grep (appropriate IP) for the client and the
+real-server, showing that the connection is in the ESTABLISHED state.
+<P>
+<PRE>
+client:# netstat -an | grep VIP
+tcp        0      0 client:1229      VIP:23           ESTABLISHED 
+
+real-server:# netstat -an | grep CIP
+tcp        0      0 VIP:23           client:1229      ESTABLISHED 
+&lt;verb>
+
+Here's immediately after the client logs out from the telnet session.
+
+&lt;verb>
+director# ipvsadm
+IP Virtual Server version 0.2.8 (size=4096)                    
+Prot LocalAddress:Port Scheduler Flags                         
+-> RemoteAddress:Port               Forward Weight ActiveConn InActConn
+TCP  lvs2.mack.net:www rr
+-> bashfull.mack.net:www            Route   1      0          0         
+-> sneezy.mack.net:www              Route   1      0          0         
+TCP  lvs2.mack.net:0 rr persistent 360
+-> sneezy.mack.net:0                Route   1      0          0         
+TCP  lvs2.mack.net:telnet rr
+-> bashfull.mack.net:telnet         Route   1      0          0         
+-> sneezy.mack.net:telnet           Route   1      0          0 
+
+client:# netstat -an | grep VIP
+#ie nothing, the client has closed the connection
+
+#the real-server has closed the session in response 
+#to the client's request to close out the session.
+#The telnet server has entered the TIME_WAIT state.     
+real-server:/home/ftp/pub# netstat -an | grep 254
+tcp        0      0 VIP:23        CIP:1236      TIME_WAIT 
+
+#a minute later, the entry for the connection at the real-server is gone.
+</PRE>
+<P>Here's the output after ftp'ing from the client and logging in,
+but before running any commands (like `dir` or `get filename`).
+<P>
+<PRE>
+director:# ipvsadm
+IP Virtual Server version 0.2.8 (size=4096)                    
+Prot LocalAddress:Port Scheduler Flags                         
+-> RemoteAddress:Port               Forward Weight ActiveConn InActConn
+TCP  lvs2.mack.net:www rr
+-> bashfull.mack.net:www            Route   1      0          0         
+-> sneezy.mack.net:www              Route   1      0          0         
+TCP  lvs2.mack.net:0 rr persistent 360
+-> sneezy.mack.net:0                Route   1      1          1         
+TCP  lvs2.mack.net:telnet rr
+-> bashfull.mack.net:telnet         Route   1      0          0         
+-> sneezy.mack.net:telnet           Route   1      0          0   
+
+client:# netstat -an | grep VIP
+tcp        0      0 CIP:1230      VIP:21        TIME_WAIT   
+tcp        0      0 CIP:1233      VIP:21        ESTABLISHED 
+
+real-server:# netstat -an | grep 254
+tcp        0      0 VIP:21        CIP:1233      ESTABLISHED
+</PRE>
+<P>The client opens 2 connections to the ftpd and leaves one open (the ftp prompt).
+The other connection, used to transfer the user/passwd information,
+is closed down after the login. 
+The entry in the ipvsadm table corresponding to the TIME_WAIT state
+at the real-server is listed as InActConn.
+If nothing else is done at the client's ftp prompt, the connection will
+expire in 900 secs. Here's the real-server during this 900 secs.
+<P>
+<PRE>
+real-server:# netstat -an | grep CIP
+tcp        0      0 VIP:21        CIP:1233      ESTABLISHED 
+real-server:# netstat -an | grep CIP
+tcp        0     57 VIP:21        CIP:1233      FIN_WAIT1   
+real-server:# netstat -an | grep CIP
+#ie nothing, the connection has dropped
+
+#if you then go to the client, you'll find it has timed out.
+ftp> dir
+421 Timeout (900 seconds): closing control connection.
+</PRE>
+<P>http 1.0 connections are closed immediately after retrieving the URL
+(<EM>i.e.</EM> you won't see any ActConn in the ipvsadm table immediately
+after the URL has been fetched).
+Here's the outputs after retreiving a webpage from the LVS.
+<P>
+<PRE>
+
+director:# ipvsadm
+IP Virtual Server version 0.2.8 (size=4096)                    
+Prot LocalAddress:Port Scheduler Flags                         
+-> RemoteAddress:Port               Forward Weight ActiveConn InActConn
+TCP  lvs2.mack.net:www rr
+-> bashfull.mack.net:www            Route   1      0          1         
+-> sneezy.mack.net:www              Route   1      0          0         
+
+client:~# netstat -an | grep VIP
+
+bashfull:/home/ftp/pub# netstat -an | grep CIP
+tcp        0      0 VIP:80        CIP:1238      TIME_WAIT   
+</PRE>
+<P>
+<H3>Q&amp;A from the mailing list</H3>
+
+<P>
+<P>Ty Beede wrote:
+<PRE>
+> I am curious about the implementation of the inactconns and
+> activeconns variables in the lvs source code.
+</PRE>
+<P>(Julian)
+<P>
+<PRE>
+
+        Info about LVS &lt;= 0.9.7
+
+TCP
+        active:         all connections in ESTABLISHED state
+        inactive:       all connections not in ESTABLISHED state
+
+UDP
+        active:         0 (none) (LVS &lt;= 0.9.7)
+        inactive:       all (LVS &lt;= 0.9.7)
+
+        active + inactive = all
+</PRE>
+<P>Look in this table for the used timeouts for each
+protocol/state:
+<P>/usr/src/linux/net/ipv4/ip_masq.c, masq_timeout_table
+<P>For VS/TUNNEL and VS/DR the TCP states are changed checking only
+the TCP flags from the incoming packets. For these methods UDP entries can
+expire (5 minutes?) if only the real servers sends packets and there are
+no packets from the client.
+<P>For info about the TCP states:
+<P>- /usr/src/linux/net/ipv4/tcp.c
+<P>- rfc793.txt
+<P>From: Jean-francois Nadeau <CODE>jf.nadeau@videotron.ca</CODE>
+<P>Done some testing (netmon) on this and here's my observations :
+<P>1. A connection becomes active when LVS sees the ACK flag in the TCP header
+incoming in the cluster : i.e when the socket gets established on the real
+server.
+<P>2. A connection becomes inactive when LVS sees the ACK-FIN flag in the TCP
+header incoming in the cluster. This does NOT corespond to the socket
+closing on the real server.
+<P>
+<P>Example with my Apache Web server.
+<P>
+<PRE>
+Client   &lt;--> Server
+
+A client request an object on the web server on port 80 :
+
+SYN REQUEST     ---->
+SYN ACK               &lt;----
+ACK                        ----->  *** AcitveConn=1 and 1 ESTABLISHED socket on real server.
+HTTP get                -----> *** The client request the object
+HTTP response     &lt;----- *** The server sends the object
+APACHE closes the socket : *** AcitveConn=1 and 0 ESTABLISHED socket on real server
+The CLIENT receives the object. (took 15 seconds in my test)
+ACK-FIN                -----> *** AcitveConn=0 and 0 ESTABLISHED socket on real server
+</PRE>
+<P>Conclusion : ActiveConn is the active number of CLIENT connections..... not on the server in the case of short transmissions like objects on a web page. Its hard to
+calculate a server's capacity based on this because slower clients makes ActiveConn greater than whats the server is really processing. You wont be able to reproduce
+that effect on a LAN because the client receives the segment too fast.
+<P>(Julian)
+<P>In the LVS mailing list many people explained that the correct way to balance the connections is to use monitoring software. The weights must be evaluated using values
+from the real server. In VS/DR and VS/TUN the Director can be easily fooled with invalid packets for some period and this can be enough to inbalance the cluster when
+using "*lc" schedulers.
+<P>I reproduce the effect connecting at 9600 bps and getting a 100k gif from Apache while monitoring established sockets on port 80 on the real server and ipvsadm on the
+cluster.
+<P>(Julian)
+<P>You are probably using VS/DR or VS/TUN in your test. Right? Using these methods the LVS is changing the TCP state based on the incoming packets, i.e. from the
+clients. This is the reason that the Director can't see the FIN packet from the real server. This is the reason that LVS can be easily SYN flooded, even flooded with ACK
+following the SYN packet. The LVS can't change the TCP state according to the state in the real server. This is possible only for VS/NAT mode. So, in some situations
+you can have invalid entries in ESTABLISHED state not corresponding to the connections in the real server which effectively ignores these SYN packets using cookies.
+The VS/NAT looks the betters solution against the SYN flood attacks. Of course, the ESTABLISHED timeout can be changed to 5 minutes for example. Currently, the
+max timeout interval (excluding the ESTABLISHED state) is 2 minutes. If you think that you can serve the clients using smaller timeout for the ESTABLISHED state
+when under "ACK after SYN" attack you can change it with ipchains. You don't need to change it under 2 minutes in LVS 0.9.7. In the last LVS version SYN+FIN
+switches the state to TW which can't be controlled using ipchains. In other cases you can change the timeout for the ESTABLISHED and FIN-WAIT states. But you
+can change it only down to 1 minute. If this can't help by 2GB RAM or more for the Director.
+<P>One thing that can be done but this is may be paranoia:
+<P>change the INPUT_ONLY table:
+<P>
+<PRE>
+from:
+
+           FIN
+        SR ---> TW
+
+to:
+
+           FIN
+        SR ---> FW
+</PRE>
+<P>OK, this is incorrect interpretation of the TCP states
+but this is a hack which allows the min state timeout to be
+1 minute. Now using ipchains we can set the timeout to all
+TCP states to 1 minute.
+<P>
+<P>If this is changed you can now set ESTABLISHED and
+FIN-WAIT timeouts down to 1 minute. In current LVS version
+the min effective timeout for ESTABLISHED and FINWAIT state
+is 2 minutes.
+<P>From: Jean-Francois Nadeau <CODE>jf.nadeau@videotron.ca</CODE>
+<P>I'm using DR on the cluster with 2 real servers.  I'm trying to control the
+number of connections to acheive this :
+<P>The cluster in normal mode balances requests on the 2 real servers.
+If the real servers reaches a point where they can't serve clients fast
+enough, a new entry with a weight of 10000 is entered in LVS to send the
+ovry with a weight of 10000 is entered in LVS to send the
+ovry with a weight of 10000 is entered in LVS to send the
+overflow locally on a web server with a static web page saying "we're too busy".
+It's a cgi that intercept 'deep links' in our site and return a predefined page.
+A 600 seconds persistency ensure that already connected clients stays on the
+server they began to browse.  The client only have to hit refresh until the
+number of AciveConns (I hoped) on the real servers gets lower and the overflow
+entry gets deleted.
+<P>Got the idea... Load balancing with overflow control.
+<P>(Julian)
+Good idea. But the LVS can't help you. When the clients are
+redirected to the Director they stay there for 600 seconds.
+<P>But when we activate the local redirection of requests due to overflow,
+ActiveConn continues to grow in LVS, while Inactconn decreases as expected.
+So the load on the real server gets OK... but LVS doesnt sees it and doesnt let
+new clients in. (it takes 12 minutes before ActiveConns decreases enough to
+reopen the site)
+<P>I need a way, a value to check at that says the server is
+overloaded, begin redirecing locally and the opposite.
+<P>I know that seems a little complicated....
+<P>(Julian)
+<P>What about trying to:
+<P>- use persistent timeout 1 second for the virtual service.
+<P>If you have one entry for this client you have all entries
+from this client to the same real server. I didn't tested it but
+may be a client will load the whole web page. If the server is
+overloaded the next web page will be "we're too busy".
+<P>- switch the weight for the Director between 0 and 10000. Don't
+delete the Director as real server.
+<P>Weight 0 means "No new connections to the server". You
+have to play with the weight for the Director, for example:
+<P>- if your real servers are loaded near 99% set the weight to 10000
+- if you real servers are loaded before 95% set the weight to 0
+<P>(From: Jean-Francois Nadeau <CODE>jf.nadeau@videotron.ca</CODE>)
+<P>Will a weight of 0 redirect traffic to the other real servers (persistency
+remains ?)
+<P>(Julian)
+If the persistent timeout is small, I think.
+<P>
+<P>I can't get rid of the 600 seconds persistency because we run a transactionnal
+engine. i.e. if a client begins on a real server, he must complete the
+transaction on that server or get an error (transactionnal contexts are stored
+locally).
+<P>Such timeout can't help to redirect the clients back to the
+real servers.
+<P>You can check the free ram or the cpu idle time for the
+real servers. By this way you can correctly set the weights for
+the real servers and to switch the weight for the Director.
+<P>These recommendations can be completely wrong. I've never
+tested them. If they can't help try to set httpd.conf:MaxClients
+to some reasonable value. Why not to put the Director as real
+server permanently. With 3 real servers is better.
+<P>(Jean)
+<P>Those are already optimized,  bottleneck is  when 1500 clients tries our site
+in less than 5 minutes.....
+<P>
+<P>One of ours has suggested that the real servers check their own state (via
+TCP in use given by sockstat) and command the director to redirect traffic
+when needed.
+<P>
+<P>Can you explain more in details why the number of ActiveConn on real server
+continue to grow while redirecting traffic locally with a weight of 10000 (and
+Inactonn on that real server decreasing normally).
+<P>(Julian)
+<P>Only the new clients are redirected to the Director at this
+moment. Where the active connections continue to grow, in the real
+servers or in the Director (weight=10000)?
+<P>
+<H2><A NAME="InActConn"></A> <A NAME="ss18.5">18.5 Creating large numbers of InActConn with testlvs; testing DoS strategies</A>
+</H2>
+
+<P>
+<P>testlvs (by Julian <CODE>ja@ssi.bg</CODE>) is available on 
+<A HREF="http://www.linuxvirtualserver.org/~julian">Julian's software page</A>.
+<P>It sends a stream of SYN packets (SYN flood) from a range of addresses 
+(default starting at 10.0.0.1) simulating connect requests from many clients. 
+Running testlvs from a client will occupy most of the resources of your
+director and the director's screen/mouse/keyboard will/may lock up for the
+period of the test. 
+To run testlvs, I export the testlvs directory (from my director)
+to the real-servers and the client and run everything off this exported
+directory. 
+<P>
+<H3>configure real-server</H3>
+
+<P>
+<P>The real-server is configured to reject packets with src_address 10.0.0.0/8. 
+<P>Here's my modified version of Julian's show_traffic.sh 
+<A NAME="show_traffic"></A> ,
+which is run on the real-server to measure throughput. 
+Start this on the real-server before running testlvs on the client. 
+For your interest you can look on the real-server 
+terminal to see what's happening during a test.
+<P>
+<PRE>
+#!/bin/sh
+#show_traffic.sh
+#by Julian Anastasov ja@ssi.bg
+#modified by Joseph Mack jmack@wm7d.net
+#
+#run this on the real-server before starting testlvs on the client
+#when finished, exit with ^C.
+#
+#suggested parameters for testlvs
+#testlvs VIP:port -tcp -packets 20000
+#where
+#       VIP:port - target IP:port for test
+#
+#packets are sent at about 10000 packets/sec on my 
+#100Mbps setup using 75 and 133MHz pentium classics.
+#
+#------------------------------------------
+# setup a few things
+to=10           #sleep time
+trap return INT #trap ^C from the keyboard (used to exit the program)
+iface="$1"      #NIC to listen on
+
+#------------------------------------------ 
+#user defined variables
+
+#network has to be the network of the -srcnet IP  
+#that is used by the copy of testlvs being run on the client
+#(default for testlvs is 10.0.0.0)
+
+network="10.0.0.0"      
+netmask="255.0.0.0"
+#-------------------------------------------
+function get_packets() {
+        cat /proc/net/dev | sed -n "s/.*${iface}:\(.*\)/\1/p" | \
+        awk '{ packets += $2} ; END { print packets }'
+}
+
+function call_get_packets() {
+        while true
+        do
+                sleep $to
+                p1="`get_packets "$iface"`"
+                echo "$((($p1-$p0)/$to)) packets/sec"
+                p0="$p1"
+        done
+}
+#-------------------------------------------
+echo "Hit control-C to exit"
+
+#initialise packets at $iface
+p0="`get_packets "$iface"`"     
+
+#reject packets from $network
+route add -net $network netmask $netmask reject
+
+call_get_packets
+
+#restore routing table on exit
+route del -net $network netmask $netmask reject
+#-------------------------------------------
+</PRE>
+<P>
+<H3>configure director</H3>
+
+<P>
+<P>I used VS-NAT on a 2.4.2 director, with
+netpipe (port 5002) as the service on two real-servers.  
+You won't be using netpipe for this test, ie
+you won't need a netpipe server on the real-server 
+You just need a port that you can set up an LVS on and
+netpipe is in my /etc/services, so the port shows up as a name
+rather than a number.
+<P>Here's my director
+<P>
+<PRE>
+director:/etc/lvs# ipvsadm   
+IP Virtual Server version 0.2.6 (size=4096)                    
+Prot LocalAddress:Port Scheduler Flags                         
+  -> RemoteAddress:Port               Forward Weight ActiveConn InActConn
+TCP  lvs2.mack.net:netpipe rr
+  -> bashfull.mack.net:netpipe        Masq    1      0          0         
+  -> sneezy.mack.net:netpipe          Masq    1      0          0         
+</PRE>
+<P>
+<P>
+<H3>run testlvs from client</H3>
+
+<P>
+<P>run testlvs (I used v0.1) on the client.
+Here testlvs is sending 256 packets from 254 addresses (the default)
+in the 10.0.0.0 network. 
+(My setup handles 10,000 packets/sec. 256 packets appears to be instantaneous.)
+<P>
+<PRE>
+client: #./testlvs 192.168.2.110:5002 -tcp -packets 256
+</PRE>
+<P>when the run has finished, go to the director 
+<P>
+<PRE>
+director:/etc/lvs# ipvsadm
+IP Virtual Server version 0.2.6 (size=4096)                    
+Prot LocalAddress:Port Scheduler Flags                         
+  -> RemoteAddress:Port               Forward Weight ActiveConn InActConn
+TCP  lvs2.mack.net:netpipe rr
+  -> bashfull.mack.net:netpipe        Masq    1      0          127       
+  -> sneezy.mack.net:netpipe          Masq    1      0          127       
+</PRE>
+<P>(If you are running a 2.2.x director, you can get more information from
+ipchains -M -L -n, or netstat -M.)
+<P>This output shows 254 connections that have closed are are waiting to timeout.
+A minute or so later, the InActConn will have cleared (on my machine, it's 50secs).
+<P>If you send the same number of packets (256), from 1000 different addresses,
+(or 1000 packets to 256 addresses), 
+you'll get the same result in the output of ipvsadm (not shown)
+<P>
+<PRE>
+client: #./testlvs 192.168.2.110:5002 -tcp -srcnum 1000 -packets 256
+</PRE>
+<P>In all cases, you've made 254 connections.
+<P>If you send 1000 packets from 1000 addresses, you'd expect 1000 connections.
+<P>
+<PRE>
+./testlvs 192.168.2.110:5002 -tcp -srcnum 1000 -packets 1000
+</PRE>
+<P>Here's the total number of InActConn as a function 
+of the number of packets (connection attempts).
+Results are for 3 consecutive runs, 
+allowing the connections to timeout in between.
+<P>The numbers are not particularly consistent between runs
+(aren't computers deterministic?). Sometimes the blinking
+lights on the switch stopped during a test, possibly a result
+of the tcp race condition (see the 
+<A HREF="http://www.linuxvirtualserver.org/Joseph.Mack/performance/single_realserver_performance.html">performance page</A>)
+<P>
+<PRE>
+packets         InActConn
+1000            356,368,377
+2000            420,391,529     
+4000            639,770,547
+8000            704,903,1000
+16000           1000,1000,1000
+</PRE>
+<P>You don't get 1000 InActConn with 1000 packets (connection attempts).
+We don't know why this is.
+<P>(Julian)
+<BLOCKQUOTE>
+I'm not sure what's going on. In my tests there are dropped packets
+too. They are dropped before reaching the director, maybe from the input
+device queue or from the routing cache. We have to check it.
+</BLOCKQUOTE>
+<P>
+<H3>InActConn with drop_entry defense strategy</H3>
+
+<P>
+<P>repeating the control experiment above, but using the drop_entry strategy 
+(see 
+<A HREF="#DoS">the DoS strategies</A> for more information).
+<P>director:/etc/lvs# echo "3" >/proc/sys/net/ipv4/vs/drop_entry
+<P>
+<PRE>
+packets         InActConn, drop_entry=3
+1000            369,368,371
+2000            371,380,409
+4000            467,578,458
+8000            988,725,790
+16000           999,994,990
+</PRE>
+<P>The drop_entry strategy drops 1/32 of the entries every second,
+so the number of InActConn decreases linearly during the timeout
+period, rather than dropping suddenly at the end of the timeout
+period.
+<P>
+<H3>InActConn with drop_packet defense strategy</H3>
+
+<P>
+<P>repeating the control experiment above, but using the drop_packet strategy 
+(see 
+<A HREF="#DoS">the DoS strategies</A> for more information).
+<P>director:/etc/lvs# echo "3" >/proc/sys/net/ipv4/vs/drop_packet
+<P>
+<PRE>
+packets         InActConn, drop_packet=3
+1000            338,339,336
+2000            331,421,382     
+4000            554,684,629
+8000            922,897,480,662         
+16000           978,998,996
+</PRE>
+<P>The drop_packet=3 strategy will drop 1/10 of the packets before sending them
+to the real-server. The connections will all timeout at the same time
+(as for the control experiment, about 1min), unlike for the drop_entry strategy.
+With the variability of the InActConn number, it is hard to see the drop_packet
+defense working here.
+<P>
+<P>
+<H3>InActConn with secure_tcp defense strategy</H3>
+
+<P>
+<P>repeating the control experiment above, but using the secure_tcp strategy 
+(see 
+<A HREF="#DoS">the DoS strategies</A> for more information). 
+The SYN_RECV value is the suggested value for VS-NAT.
+<P>
+<PRE>
+director:/etc/lvs# echo "3" >/proc/sys/net/ipv4/vs/secure_tcp
+director:/etc/lvs# echo "10" >/proc/sys/net/ipv4/vs/timeout_synrecv
+</PRE>
+<P>
+<PRE>
+packets         InActConn, drop_packet=3
+1000            338,372,359     
+2000            405,367,362,            
+4000            628,507,584
+8000            642,1000,886                    
+16000           1000,1000,1000
+</PRE>
+<P>This strategy drops the InActConn from the ipvsadm table after 10secs.
+<P>
+<P>
+<H3>maximum number of InActConn</H3>
+
+<P>
+<P>If you want to get the maximum number of InActConn, you need to run the
+test for longer than the FIN timeout period (here 50secs). 
+2M packets is enough here.
+As well you want as many different addresses used as possible. 
+Since testlvs is connecting from the 10.0.0.0/8 network, 
+you could have 254^3=16M connections.
+Since only 2M packets can be passed before connections start
+to timeout and the director connection table reaches a steady state
+with new connections arriving and old connections timing out, there is
+no point in sending packets from more that 2M source addresses.
+<P>Note: you can view the contents of the connection table with
+<P>2.2
+<UL>
+<LI>netstat -Mn</LI>
+<LI>cat /proc/net/ip_masquerade</LI>
+</UL>
+<P>2.4
+<UL>
+<LI>cat /proc/net/ip_vs_conn</LI>
+</UL>
+<P>
+<P>Here's the InActConn with various defense strategies. The InActConn is
+the maximum number reachable, the scrnum and packets are the numbers
+needed to saturate the director. The time of the test must exceed the timeouts.
+InActConn was determined by running a command like this
+<P>
+<PRE>
+client: #./testlvs 192.168.2.110:5002 -tcp -srcnum 1000000 -packets 2000000
+</PRE>
+<P>and then adding the (two) entries in the InActConn column from the output
+of ipvsadm.
+<P>
+<PRE>
+kernel          DoS strategy    InActConn       -srcnum -packets (10k/sec)
+SYN cookie
+no              secure_tcp      13,400          200,000 200,000 
+                syn_recv=10
+no              none            99,400          500,000 1,000,000
+yes             non             70,400          1,000,000 2,000,000
+</PRE>
+<P>
+<H3>Is the number of InActConn a problem?</H3>
+
+<P>
+<P>
+<P>(edited from Julian)
+<P>
+<BLOCKQUOTE>
+The memory used is 128 bytes/connection and 60k connections
+will tie up 7M of memory. LVS does not use system sockets. 
+LVS has its own connection table. The limit is the amount of 
+memory you have - virtually unlimited.
+The masq table (by default 40960 connections per protocol). 
+is a separate table and is used only for LVS/NAT FTP
+or for normal MASQ connections. 
+</BLOCKQUOTE>
+<P>However the director
+was quite busy during the testlvs test. Attempts to connect to other LVS'ed services
+(not shown in the above ipvsadm table) failed. Netpipe tests run at the same
+time from the client's IP (in the 192.168.1.0/24 network) stopped, but resumed
+at the expected rate after the testlvs run completed (i.e. but before the InActConn
+count dropped to 0).
+<P>
+<H2><A NAME="ss18.6">18.6 Debugging LVS</A>
+</H2>
+
+<P>
+<P>new way
+<P>
+<PRE>
+echo x > /proc/sys/net/ipv4/debug_level
+where 0&lt;x&lt;9
+</PRE>
+<P>old way (may still work - haven't tested it)
+<P>(Wensong)
+<PRE>
+> Is there any way to debug/watch the path between the director and the
+> real-server?
+</PRE>
+<P>below the entry
+<P>CONFIG_IP_MASQUERADE_VS_WLC=m
+<P>in /usr/src/linux/.config
+<P>add the line
+<P>CONFIG_IP_VS_DEBUG=y
+<P>This switch affects ip_vs.h and ip_vs.c
+<P>make clean in /usr/src/linux/net/ipv4 and rebuild the kernel and
+modules.
+<P>
+<PRE>
+(other switches you will find in the code are
+
+IP_VS_ERR
+IP_VS_DBG
+IP_VS_INFO
+
+)
+</PRE>
+<P>Look in syslog/messages for the output. The actual location of
+the output is determined by /etc/syslog.conf. For instance
+<P>kern.*                                          /usr/adm/kern
+<P>sends kernel messages to /usr/adm/kern (re-HUP syslogd if
+you change /etc/syslog.conf). Here's the output when LVS
+is first setup with ipvsadm
+<P>$ tail /var/adm/kern
+<P>Nov 13 17:26:52 grumpy kernel: IP_VS: RR scheduling module loaded.
+<P>
+<PRE>
+(
+Note CONFIG_IP_VS_DEBUG is not a debug level output, so you don't
+need to add
+
+*.=debug                                        /usr/adm/debug
+
+to your syslog.conf file
+)
+</PRE>
+<P>Finally check whether packets are forwarded successfully
+through direct routing.
+<P>also you can use tcpdump to watch packets between machines.
+<P>Here's some information from Ratz <CODE>ratz@tac.ch</CODE>
+<P>Since some recent lvs-versions extensive debugging can be enabled to get either
+more information about what's exactly going on or to help you understanding the
+process of packet handling within the director's kernel. Be sure to have
+compiled in debug support for LVS (CONFIG_IP_VS_DEBUG=yes in .config)
+<P>You can enable debugging by setting:
+echo $DEBUG_LEVEL > /proc/sys/net/ipv4/vs/debug_level
+where DEBUG_LEVEL is between 0 and 10.
+<P>The do a tail -f /var/log/kernlog and watch the output flying by while
+connecting to the VIP from a CIP.
+<P>If you want to disable debug messages in kernlog do:
+echo 0 > /proc/sys/net/ipv4/vs/debug_level
+<P>If you run tcpdump on the director and see a lot of packets with the same ISN 
+and only SYN and the RST, then either
+<P>
+<UL>
+<LI>you haven't handled the 
+<A HREF="LVS-HOWTO-3.html#arp_problem">arp problem</A> 
+(most likely)</LI>
+<LI>you're trying to connect directly to the VIP from within the cluster itself</LI>
+</UL>
+<P>
+<H2><A NAME="ss18.7">18.7 Security Issues</A>
+</H2>
+
+<P>
+<P>The HOWTO doesn't discuss securing your LVS (we can't do everything at once).
+However you need to handle it someway.
+<P>Roberto Nibali <CODE>ratz@tac.ch</CODE> 03 May 2001
+<P>
+<BLOCKQUOTE>
+It doesn't matter whether you're running an e-gov site or you mom's homepage.
+You have to secure it anyway, because the webserver is not the only machine
+on a net. A breach of the webserver will lead to a breach of the other
+systems too.
+</BLOCKQUOTE>
+<P>from Ratz <CODE>ratz@tac.ch</CODE>
+<P>The load balancer is basically on as secure as Linux itself is. 
+ipchains settings don't affect LVS functionality 
+(unless by mistake you use the same mark for ipchains and ipvsadm).
+LVS itself has some builtin security mainly to try to 
+secure real-server in case of a DoS attack. 
+There are several parameters you might want to set in the proc-fs.
+<P>
+<UL>
+<LI>/proc/sys/net/ipv4/vs/amemthresh</LI>
+<LI>/proc/sys/net/ipv4/vs/am_droprate</LI>
+<LI>/proc/sys/net/ipv4/vs/drop_entry</LI>
+<LI>/proc/sys/net/ipv4/vs/drop_packet</LI>
+<LI>/proc/sys/net/ipv4/vs/secure_tcp</LI>
+<LI>/proc/sys/net/ipv4/vs/debug_level
+<P>With this you select the debug level (0: no debug output, >0: debug
+output in kernlog, the higher the number to higher the verbosity)       
+<P>The following are timeout settings. For more information see
+TCP/IP Illustrated Vol. I, R. Stevens.
+<P>
+</LI>
+<LI>/proc/sys/net/ipv4/vs/timeout_close - CLOSE </LI>
+<LI>/proc/sys/net/ipv4/vs/timeout_closewait - CLOSE_WAIT</LI>
+<LI>/proc/sys/net/ipv4/vs/timeout_established - ESTABLISHED</LI>
+<LI>/proc/sys/net/ipv4/vs/timeout_finwait - FIN_WAIT</LI>
+<LI>/proc/sys/net/ipv4/vs/timeout_icmp - ICMP</LI>
+<LI>/proc/sys/net/ipv4/vs/timeout_lastack - LAST_ACK</LI>
+<LI>/proc/sys/net/ipv4/vs/timeout_listen - LISTEN</LI>
+<LI>/proc/sys/net/ipv4/vs/timeout_synack - SYN_ACK</LI>
+<LI>/proc/sys/net/ipv4/vs/timeout_synrecv - SYN_RECEIVED</LI>
+<LI>/proc/sys/net/ipv4/vs/timeout_synsent - SYN_SENT</LI>
+<LI>/proc/sys/net/ipv4/vs/timeout_timewait - TIME_WAIT</LI>
+<LI>/proc/sys/net/ipv4/vs/timeout_udp - UDP </LI>
+</UL>
+<P>You don't want your director replying to pings.
+<P>
+<H2><A NAME="MTU_discovery"></A> <A NAME="ss18.8">18.8 MTU discovery</A>
+</H2>
+
+<P>
+<P>(code for this was added sometime in 2000)
+<P>Eric Mehlhaff wrote:
+<PRE>
+> I was just updating ipchains rules and it struck me that I dont know what
+> LVS does with the ICMP needs-fragmentation packets required for path
+> MTU discovery to work. What does LVS do with such packets, when its not
+> immediately obvious which real server they are supposed to go to?
+
+(Wensong)
+Sorry that there is no LVS code to handle ICMP packets and send
+them to the corresponding real servers. But, I am thinking about
+adding some code to handle this.
+
+Date: Wed, 13 Dec 2000 22:02:43 +0000 (GMT)
+From: Julian Anastasov &lt;tt/ja@ssi.bg/
+
+> what happens with ICMP messages
+> specified for a Realserver. Or more exactly what happens if for example
+> an ICMP host unreachable messages is send to the LVS because a client
+> got down ?
+> Are the entrys from the connection table removed ?
+
+        No
+
+> Are the messages forwarded to the Realservers ?
+</PRE>
+<P>Yes, the embedded TCP or UDP datagram is inspected and
+this information is used to forward the ICMP message to the right
+real server. All other messages that are not related to existing
+connections are accepted locally.
+<P>
+<P>Eric Mehlhaff <CODE>mehlhaff@cryptic.com</CODE> passed on more info
+<P>Theoreticaly, path-mtu-discovery happens on every new tcp
+connection.  In most cases the default path MTU is fine.  It's
+weird cases (ethernet LAN conenctions with low MTU WAN
+connections ) that point out broken path-MTU discovery.  I.e. for
+a while I had my home LAN (MTU 1500) hooked up via a modem
+connection that I had set MTU to 500 for.  The minimum MTU in
+this case was the 500 for my home but there were many broken web
+sites I could not see because they had blocked out the
+ICMP-must-fragment packets on their servers.  One can also see
+the effects of broken path mtu discovery on FDDI local networks.
+<P>Anyway, here's some good web pages about it:
+<PRE>
+http://www.freelabs.com/~whitis/isp_mistakes.html
+http://www.worldgate.com/~marcs/mtu/
+</PRE>
+<P>
+<H2><A NAME="ICMP_redirects"></A> <A NAME="ss18.9">18.9 ICMP handling</A>
+</H2>
+
+<P>
+<P>What happens if a real-server is connected to a client which is no
+longer reachable? ICMP replies go back to the VIP and will not
+neccessarily be forwarded to the correct real-server.
+<P>Jivko Velev <CODE>jiko@tremor.net</CODE>
+<P>Assume that we have TCP connections...and real server is trying to
+respond to the client, but it cannot reach it (the client is down,
+the route doesn't exist anymore, the intermadiate gateway is
+congested). In these cases your VIP will receive ICMP packets
+dest unreachable, source quench and friends. If you dont route
+these packets to the correct real-server you will affect performance
+of the LVS. For example the real-server will continue to resend
+packets to the client because they are not confirmed, and gateways
+will continue to send you ICMP packets back to VIP for every
+packets they droped. The TCP stack will drop these kind of
+connections after his timeouts expired, but if the director
+forwarded the ICMP packets to the appropriate real-server,
+this will occur a little bit earlier, and will avoid overloading
+the redirector with ICMP stuff.
+<P>When you receive a ICMP packet it contains the full IP header
+of the packet that cause this ICMP to be generated + 64bytes of
+its data, so you can assume that you have the TCP/UDP header too.
+So it is possible to implement "Persitance rules" for ICMP packages.
+<P>Summary: This problem was handled in kernel 2.2.12 and earlier by
+having the configure script turn off icmp redirects in the
+kernel (through the proc interface). For 2.2.13 the ipvs patch
+handles this. The configure script knows which kernel you are
+using on the director and does the Right Thing (TM).
+<P>Date: Wed, 13 Dec 2000 22:02:43 +0000 (GMT)
+From: Julian Anastasov <CODE>ja@ssi.bg</CODE>
+<P>
+<PRE>
+> On Wed, 13 Dec 2000, joern maier wrote
+
+> what happens with ICMP messages specified for a Realserver. 
+> Or more exactly what happens if for example an ICMP host 
+> unreachable messages is send to the LVS because a client got down ?
+> Are the entrys from the connection table removed ?
+
+        No
+
+> Are the messages forwarded to the Realservers ?
+</PRE>
+<P>Julian 13 Dec 2000
+<P>Yes, the embedded TCP or UDP datagram is inspected and
+this information is used to forward the ICMP message to the right
+real server. All other messages that are not related to existing
+connections are accepted locally.
+<P>from a posting I picked off Dejanews by Barry Margolin 
+<A NAME="icmp_redirects"></A> <P>the criteria for sending a redirect are:
+<P>1. The packet is being forwarded out the same physical
+interface that it was received from,
+<P>2. The IP source address in the packet is on the same
+Logical IP (sub)network as the next-hop IP address,
+<P>3. The packet does not contain an IP source route option.
+<P>Routers ignore redirects and shouldn't even be receiving them in
+the first place, because redirects should only be sent if the
+source address and the preferred router address are in the same
+subnet. If the traffic is going through an intermediary router,
+that shouldn't be the case.  The only time a router should get
+redirects is if it's originating the connections (e.g. you do a
+"telnet" from the router's exec), but not when it's doing normal
+traffic forwarding.
+<P>
+<PRE>
+> Well, remember that ICMP redirects are just bandages to cover routing
+> problems. No one really should be routing that way.
+>
+> ICMP redirects are easily spoofed, so many systems ignore them.
+> Otherwise they risk having their connectivity being disconnected on whim.
+> Also, many systems no longer send ICMP redirects because some people
+> actually want to pass traffic through an intervening system!  I don't know
+> how FreeBSD ships these days, but I suggest that it should ship with
+> ignore ICMP redirects as the default.
+</PRE>
+<P>
+<H3>LVS code handles only needs to handle icmp redirects for VS-NAT</H3>
+
+<P>
+<P>(and not for VS-DR and VS-Tun)
+<P>(Julian: 12 Jan 2001)
+<P>Only for VS-NAT do the packets from the real servers hit
+the forward chain, i.e. the outgoing packets. VS-DR and VS-TUN
+receive packets only to LOCAL_IN, i.e. the FORWARD chain, where the
+redirect is sent, is skipped. The incoming packets for LVS/NAT use
+ip_route_input() for the forwarding, so they can hit the FORWARD chain
+too and to generate ICMP redirects after the packet is translated.
+So, the problem always exists for LVS/NAT, for packets in the both
+directions because after the packets are translated we always use
+ip_forward to send the packets to the both ends.
+<P>I'm not sure but may be the old LVS versions used
+ip_route_input() to forward the DR traffic to the real servers.
+But this was not true for the TUN method. This call to ip_route_input()
+can generate ICMP redirects and may be you are right that for the
+old LVS versions this is a problem for DR. Looking in the Changelog
+it seems this change occured in LVS version 0.9.4, near Linux 2.2.13.
+So, in the HOWTO there is something that is true: there is no ICMP
+redirect problem for LVS/DR starting from Linux 2.2.13 :) But the
+problems remains for LVS/NAT even in the latest kernel. But this
+change in LVS is not created to solve the ICMP redirect problem. Yes,
+the problem is solved for DR but the goal was to speedup the forwarding
+for the DR method by skipping the forward chain. When the forward
+chain is skipped the ICMP redirect is not sent.
+<P>
+<P>ICMP redirects and LVS:
+(mostly from Wensong)
+<P>The test setups shown in this HOWTO for VS-DR and VS-Tun have the
+client, director and real-servers on the same network. In
+production the client will connect via a router from a remote
+network (and for VS-Tun the real-servers could be remote and all
+on separate networks).
+<P>The client forwards the packet for VIP to the director, the
+director receives the packet on the eth0 (eth0:1 is an alias of
+eth0), then forwards the packet to the real server through eth0.
+The director will think that the packet came and left through the
+same interface without any change, so an icmp redirect is send to
+the client to notify it to send the packets for VIP directly to
+the RIP.
+<P>However, when all machines are on the same network, the client
+is not a router and is directly connected to the director, and
+ignores the icmp redirect message and the LVS works properly.
+<P>If there is a router between the client and the director, and it
+listens to icmp redirects, the director will send an icmp
+redirect to the router to make it send the packet for VIP to the
+real server directly, the router will handle this icmp redirect
+message and change its routing table, then the LVS/DR won't work.
+<P>The symptoms is that once the load balancer sends an ICMP
+redirect to the router, the router will change its routing table
+for VIP to the real server, then all the LVS won't work. Since
+you did your test in the same network, your LVS client is in the
+same network that the load balancer and the server are, it
+doesn't need to pass through a router to reach the LVS, you won't
+have such a symptom. :)
+<P>Only when LVS/DR is used and there is only one interface to
+receive packets for VIP and to connect the real server, there is
+a need to suppress the ICMP redirects of the interface.
+<P>
+<PRE>
+(The ICMP redirects is turned on in the kernel 2.2 by default.
+The configure.pl script turns off icmp redirects on the director
+using sysctl
+
+    echo 0 > /proc/sys/net/ipv4/conf/eth0/send_redirects
+)
+</PRE>
+<P>(Wensong)
+In the reverse direction, replies coming back from the real-server
+to the client
+<P>
+<PRE>
+                                  |&lt;------------------------|
+                                  |                  real server
+ client &lt;--> tunlhost1=======tunlhost2 --> director ------->|
+</PRE>
+<P>After the first response packet arrives from the real-server
+at the tunlhost2, tunlhost2 will try to send the packet through
+the tunnel. If the packet is too big, then tunlhost2 will
+send an ICMP packet to the VIP to fragment the packet. In
+the previous versions of ipvs, the director won't forward
+the ICMP packet to (any) real server. With 2.2.13 code has
+been added to handle the icmp redirects and make the
+director forward icmp packets to the corresponding servers.
+<P>
+<PRE>
+> If a real-server goes down after the connection is established, will the
+> client get a dest_unreachable from the director?
+</PRE>
+<P>No. Here is a design issue. If the director sends an ICMP_DEST_UNREACH
+immediately, all tranfered data for the established connection will be
+lost, the client needs to establish a new connection. Instead, we
+would rather wait for the timeout of connection, if the real server
+recovers from the temporary down (such as overloaded state) before the
+connection expires, then the connection can continue. If the real
+server doesn't recover before the expire, then an ICMP_DEST_UNREACH is
+sent to the client.
+<P>
+<PRE>
+> If the client goes down after the connection is established, where do the
+> dest_unreachable icmp packets generated by the last router go?
+</PRE>
+<P>If the client is unreachable, some router will generate an
+ICMP_DEST_UNREACH packet and sent to the VIP, then the director will
+forward the ICMP packet to the real server.
+<P>
+<PRE>
+
+> Since icmp packets are udp, are the icmp packets routed through the
+> director independantly of the services that are being LVS'ed. ie if the
+> director is only forwarding port 80/tcp, from CIP to a particular RIP,
+> does the LVS code which handles the icmp forward all icmp packets from the
+> CIP to that RIP. What if the client has a telnet session to one real-server
+> and http to another real-server?
+</PRE>
+<P>It doesn't matter, because the header of the original packet is
+encapsulated in the icmp packet. It is easy to identify which
+connection is the icmp packet for.
+<P>
+<PRE>
+>If the client has two connections to the LVS (say telnet and http)
+>each to 2 different real-servers and the client goes down, the director
+>gets 2 ICMP_DEST_UNREACH packets. The director knows from the CIP:port
+>which real-server to send the icmp packet to?
+</PRE>
+<P>(Jerry Glomph Black)
+<P>
+<PRE>
+> The kernel debug log (dmesg) occasionally gets bursts of
+> messages of the following form on the LVS box:
+>
+> IP_MASQ:reverse ICMP: failed checksum from 199.108.9.188!
+> IP_MASQ:reverse ICMP: failed checksum from 199.108.9.188!
+> IP_MASQ:reverse ICMP: failed checksum from 199.108.9.188!
+> IP_MASQ:reverse ICMP: failed checksum from 199.108.9.188!
+> IP_MASQ:reverse ICMP: failed checksum from 199.108.9.188!
+>
+> What is this, is it a serious problem, and how to deal with it?
+>
+
+I don't think it is a serious problem. If these messages are
+generated, the ICMP packets must fail in checksum. Maybe the ICMP
+packets from 199.108.9.188 is malformed for some unknown reason.
+</PRE>
+<P>
+<PRE>
+> On Fri, 21 Jan 2000, Wensong Zhang wrote:
+> 
+> > No, it is not right. The director handles ICMP packets for virtual
+> > services long time ago, please check the ChangeLog of the code.
+> 
+> from ChangeLog for 0.9.3-2.2.13
+> 
+>         The incoming ICMP packets for virtual services will be forwarded
+>         to the right real servers, and outgoing ICMP packets from virtual
+>         services will be altered and send out correctly. This is important
+>         for error and control notification between clients and servers,
+>         such as the MTU discovery.
+> 
+> If a realserver goes down after the connection is established, will the
+> client get a dest_unreachable from the director?
+</PRE>
+ 
+<P>No. Here is a design issue. If the director sends an ICMP_DEST_UNREACH
+immediately, all tranfered data for the established connection will be
+lost, the client needs to establish a new connection. Instead, we
+would rather wait for the timeout of connection, if the real server
+recovers from the temporary down (such as overloaded state) before the
+connection expires, then the connection can continue. If the real
+server doesn't recover before the expire, then an ICMP_DEST_UNREACH is
+sent to the client.
+<P>
+<PRE>
+> If the client goes down after the connection is established, where do the
+> dest_unreachable icmp packets generated by the last router go?
+</PRE>
+<P>If the client is unreachable, some router will generate an
+ICMP_DEST_UNREACH packet and sent to the VIP, then the director will
+forward the ICMP packet to the real server.
+<P>
+<PRE>
+ 
+> Since icmp packets are udp, are the icmp packets routed through the
+> director independantly of the services that are being LVS'ed. ie if the
+> director is only forwarding port 80/tcp, from CIP to a particular RIP,
+> does the LVS code which handles the icmp forward all icmp packets from the
+> CIP to that RIP. What if the client has a telnet session to one realserver
+> and http to another realserver?
+</PRE>
+ 
+<P>It doesn't matter, because the header of the original packet is
+encapsulated in the icmp packet. It is easy to identify which
+connection is the icmp packet for.
+<P>
+<H2><A NAME="ss18.10">18.10 Filesystems for real-server content: the many reader, single writer problem</A>
+</H2>
+
+<P>
+<P>The client can be assigned to any real-server. 
+One of the assumptions of LVS is that all real-servers have the same content.
+This assumption is easy to fullfill for services like http, where the
+administrator updates the files on all real-servers when needed. 
+For services like mail or databases, the client writes to storage on 
+one real-server. 
+The other real-servers do not see the updates unless something intervenes.
+Various tricks are described elsewhere here for mailservers and databases.
+These require the real-servers to write to common storage (for mail
+the mailspool is nfs mounted; for databases, the LVS client connects
+to a database client on each real-server and these database
+clients write to a single databased on a backend machine, or the
+databased's on each real-server are capable of replicating).
+<P>One solution is to have a file system which can propagate changes to
+other real-servers. We have mentioned gfs and coda in several places
+in this HOWTO as holding out hope for the future. People now have these
+working.
+<P>
+<P>Wensong Zhang <CODE>wensong@gnuchina.org</CODE> 05 May 2001
+<P>
+<BLOCKQUOTE>
+It seems to me that 
+<A HREF="http://www.coda.cs.cmu.edu">Coda</A>
+is becoming quite stable. I have run coda-5.3.13
+with the root volume replicated on two coda file servers for near two
+months, I haven't met problem which need manual maintance until now. BTW,
+I just use it for testing purposes, it is not running in production site.
+</BLOCKQUOTE>
+<P>
+<P>Mark Hlawatschek <CODE>hlawatschek@atix.de</CODE> 2001-05-04
+<P>
+<BLOCKQUOTE>
+we made some good experiences with the use of 
+<A HREF="http://www.globalfilesystem.org/">GFS</A>.
+We are using LVS in conjunction with the GFS for about one year in older
+versions and it worked quite stable. We successfully demonstrated the
+solution with a newer version of GFS (4.0) at the CEBit 2001.
+Several domains (i.e. http://www.atix.org) will be served by the new
+configuration next week.
+<P>
+</BLOCKQUOTE>
+<P>Mark's slides from his  
+<A HREF="http://ace73.atix.de/downloads/santime/decus-hlawatschek-release.pdf">talk in German at DECUS in Berlin (2001)</A> 
+is available.
+<P>
+<HR>
+<A HREF="LVS-HOWTO-19.html">Next</A>
+<A HREF="LVS-HOWTO-17.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc18">Contents</A>
+</BODY>
+</HTML>

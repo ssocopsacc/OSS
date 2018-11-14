@@ -1,0 +1,36 @@
+serial_no = 48
+service = lvs
+heartbeat = 1
+heartbeat_port = 539
+keepalive = 6
+deadtime = 18
+network = direct
+debug_level = NONE
+active_cmd = /etc/sysconfig/ha/active.sh
+inactive_cmd = /etc/sysconfig/ha/inactive.sh
+monitor_links = 0
+syncdaemon = 1
+virtual vpn443 {
+     port = 443
+     persistent = 10
+     send = "GET / HTTPS/1.0\r\n\r\n"
+     expect = "HTTPS"
+     scheduler = rr
+     protocol = tcp
+     timeout = 6
+     reentry = 15
+     quiesce_server = 1
+  }
+virtual vpn80 {
+     port =  80
+     persistent = 10
+     send = "GET / HTTPS/1.0\r\n\r\n"
+     expect = "HTTPS"
+     use_regex = 0
+     scheduler = rr
+     protocol = tcp
+     timeout = 6
+     reentry = 15
+     quiesce_server = 1
+  }
+

@@ -1,0 +1,118 @@
+#!/bin/sh
+#
+# piranha-gui	This script handles the starting and stopping of the
+#		apache server used for the piranha gui (http://localhost:3636/)
+#		(Not terribly well done because it's difficult to distinguish
+#		between the normal webserver and the piranha copy except by
+#		process owner and even then the parent is root owned)
+#
+# chkconfig: - 60 10
+# description:  piranha-gui is used to kick off an entirely seperate httpd
+#		web server that runs off port 3636
+#		
+#
+# processname: httpd
+# pidfile: /var/log/piranha/piranha-httpd.pid
+# config: /etc/sysconfig/ha/conf/httpd.conf
+
+# Source function library.
+. /etc/rc.d/init.d/functions
+
+# Source networking configuration.
+. /etc/sysconfig/network
+
+# Check that networking is up.
+if [ ${NETWORKING} = "no" ] ; then
+	exit 1
+fi
+
+# Make sure piranha-gui (symlink to apache httpd) is available
+if [ ! -f /usr/sbin/piranha_gui ] ; then
+	echo "/usr/sbin/piranha_gui symlink to httpd program is missing"
+	exit 5
+fi
+
+# Make sure that there is an lvs.cf to work from
+if [ ! -f /etc/sysconfig/ha/lvs.cf ] ; then
+	exit 6
+fi
+
+start() {
+        echo -n "Starting piranha-gui: "
+        RETVAL=1
+        #check for php5 modules
+	if ! [ -f /etc/sysconfig/ha/modules/libphp5.so ] ; then
+            failure
+	    echo
+	    echo "php5 modules are missing"
+            return $RETVAL
+	fi
+        daemon /usr/sbin/piranha_gui -f /etc/sysconfig/ha/conf/httpd.conf
+        RETVAL=$?
+        echo
+        [ $RETVAL = 0 ] && touch /var/lock/subsys/piranha-gui
+        return $RETVAL
+}
+
+stop() {
+        echo -n "Shutting down piranha-gui: "
+#       RETVAL=1
+#       if [ -f /var/log/piranha/piranha-httpd.pid ] ; then
+#    	    PID=`head -1 /var/log/piranha/piranha-httpd.pid`
+# 	    action "" kill -TERM $PID
+#	    RETVAL=$?
+#       fi
+# old logic block
+
+	killproc piranha_gui
+        RETVAL=$?
+        #new logic block
+
+        rm -f /var/log/piranha/piranha-httpd.pid
+	echo
+        [ $RETVAL = 0 ] && rm -f /var/lock/subsys/piranha-gui
+        return $RETVAL
+}
+
+
+# See how we were called.
+case "$1" in
+  start)
+	start
+	;;
+
+  stop)
+	stop
+	;;
+
+  status)
+	status piranha_gui
+	RETVAL=$?
+	;;
+
+  stop)
+	stop
+	;;
+
+  restart)
+        stop
+        sleep 2
+        start
+        ;;
+
+  condrestart)
+      	$0 status
+	if [ $? = 0 ]; then
+	    $0 restart
+	fi
+	RETVAL=0
+        ;;
+
+  *)
+        echo "Usage: piranha-gui: {start|stop|status|restart|condrestart}"
+        exit 1
+esac
+
+exit $? 
+
+

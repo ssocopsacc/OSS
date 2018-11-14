@@ -1,0 +1,120 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO: FAQ</TITLE>
+ <LINK HREF="LVS-HOWTO-21.html" REL=previous>
+ <LINK HREF="LVS-HOWTO.html#toc22" REL=contents>
+</HEAD>
+<BODY>
+Next
+<A HREF="LVS-HOWTO-21.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc22">Contents</A>
+<HR>
+<H2><A NAME="s22">22. FAQ</A></H2>
+
+<P>
+<P>
+<H2><A NAME="ss22.1">22.1 Help! My LVS doesn't work</A>
+</H2>
+
+<P>
+<P>We need more information than this. 
+For suggestions look at the 
+<A HREF="LVS-HOWTO-1.html#problem_report">information needed to solve problems</A>.
+<P>
+<H2><A NAME="ss22.2">22.2 My LVS doesn't work: ipvsadm shows entries in InActConn, but none in ActiveConn</A>
+</H2>
+
+<P>
+<P>The usual mistake is to have the default gw for the real-servers set incorrectly. 
+For VS-NAT its the director and for VS-DR and VS-Tun, it's _not_ the director.
+Setting up an LVS by hand is tedious. 
+You can use the 
+<A HREF="LVS-HOWTO-9.html#configure">configure script</A>
+which will trap most errors in setup.
+<P>
+<H2><A NAME="ss22.3">22.3 initial connection is delayed, but once connected everything is fine</A>
+</H2>
+
+<P>
+<P>Usually you have problems with 
+<A HREF="LVS-HOWTO-16.html#authd">authd/identd</A>. 
+Simplest thing is to stop your service from calling the identd server
+on the client (<EM>i.e.</EM>disconnect your service from identd).
+<P>
+<H2><A NAME="ss22.4">22.4 How fast/big should my director be</A>
+</H2>
+
+<P>
+<P>There isn't a simple answer.
+<P>The speed of the director is determined by the packet throughput from/to the
+clients and not by the number of real-servers. 
+From the mailing list, 3-500MHz UMP directors running 2.2.x 
+kernels with the ipvs patch can handle 100Mbps throughput. 
+We don't know what is needed for 1Gpbs throughput, but postings on the mailing
+list show that top end UMP machines (eg 800MHz) can't handle it.
+<P>For the complicated answer, see the 
+<A HREF="LVS-HOWTO-5.html#performance">section on estimating director performance</A>.
+<P>
+<H2><A NAME="ss22.5">22.5 Does the director handle ICMP?</A>
+</H2>
+
+<P>
+<P>yes. For LVS'ed services, the director handles 
+<A HREF="LVS-HOWTO-18.html#ICMP_redirects">ICMP redirects</A>
+and 
+<A HREF="LVS-HOWTO-18.html#MTU_discovery">MTU discovery</A>
+delivering them to the correct real-server. 
+ICMP packets for non-LVS'ed services are delivered locally.
+<P>
+<H2><A NAME="ss22.6">22.6 I get "connection refused" from the client</A>
+</H2>
+
+<P>
+<P>This means that no service is listening for your client's
+requests and that some machine at the end is replying that
+it is not listening for that service. 
+If the LVS is working, then the director is
+forwarding packets to a real-server which doesn't have the
+service set up.
+<P>
+<H2><A NAME="ss22.7">22.7 Any recommendations for a NIC?</A>
+</H2>
+
+<P>
+<P>No they all seem to work OK enough.
+If you are going into production, you should test
+that yours work with a netpipe test
+(see the 
+<A HREF="http://www.linuxvirtualserver.org/Joseph.Mack/performance/single_realserver_performance.html">performance page</A>).
+<P>
+<H2><A NAME="ss22.8">22.8 Does SMP help?</A>
+</H2>
+
+<P>
+<P>LVS is kernel code. In particular the network code is kernel code.
+Kernel code is only SMP in 2.4.x kernels. 
+To take advantage of SMP for LVS then you
+must be running a 2.4.x kernel.
+<P>Michael Brown <CODE>michael_e_brown@dell.com</CODE> wrote on 26 Dec 2000
+<P>
+<BLOCKQUOTE>
+I've seen significant improvements using dual and quad processors
+with 2.4. Under 2.2 there are improvements but not astonishing ones.
+Things like 90% saturation of a Gig link using quad processors.
+70% using dual processors and 55% using a single processor
+under 2.4.0test.
+<P>
+<P>I haven't had much of a chance to do a full comparison of 2.2 vs 2.4,
+but most evidence points to &gt;100% improvement for network
+intensive tasks.
+</BLOCKQUOTE>
+<P>
+<P>
+<HR>
+Next
+<A HREF="LVS-HOWTO-21.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc22">Contents</A>
+</BODY>
+</HTML>

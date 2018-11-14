@@ -1,0 +1,94 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO: localnode</TITLE>
+ <LINK HREF="LVS-HOWTO-15.html" REL=next>
+ <LINK HREF="LVS-HOWTO-13.html" REL=previous>
+ <LINK HREF="LVS-HOWTO.html#toc14" REL=contents>
+</HEAD>
+<BODY>
+<A HREF="LVS-HOWTO-15.html">Next</A>
+<A HREF="LVS-HOWTO-13.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc14">Contents</A>
+<HR>
+<H2><A NAME="localnode"></A> <A NAME="s14">14. localnode</A></H2>
+
+<P>
+<P>(We rarely hear of anyone using this.)
+<P>The director machine can be a real-server too. This is convenient
+when only a small number of machines are available as servers.
+<P>To use this feature, add a real-server with IP 127.0.0.1 (or a
+local IP on your director) to your lvs_xxx.conf file, rerun the
+configure script, and reinstall the rc.lvs_xxx files.
+<P>You will need to setup the service to listen to the VIP on the
+director. Some services, eg telnet listen on all IP's on the
+machine and you won't have to do anything special for them.
+Other services, eg http have to be specifically configured to
+listen to each IP. You are _not_ connecting to a service on
+127.0.0.1 despite what this instruction might look like.
+<P>LocalNode operates independantly of NAT,TUN or DR modules.
+<P>from the mailing list
+<P>Paul Monaghan wrote:
+<PRE>
+> Okay, perhaps what I am trying to do can't work for what ever reason but
+> here it is.  I've setup ipvs rules as follows:
+>
+> TCP 209.226.95.146:8080 wlc
+>       -> 10.0.0.1:8001         Local   1      1          0
+>       -> 10.0.0.1:8000         Local   1      0          0
+</PRE>
+<P>(Wensong)
+For the LocalNode feature, the load balancer just lets the
+packets pass to the upper layer (up to service daemon) to process
+the request. So, the port number of the local service must be
+equal to that of the virtual service, otherwise it won't work.
+Maybe I should add some code to check whether the port number of
+local service is equal to that of virtual service, if not, reject
+it to avoid such an error.
+<P>Testing LocalNode
+<P>If you want to explore installing localnode by hand, try this.
+First make sure scheduling is turned on at the director (this
+command adds round robin scheduling and direct routing)
+<P>$ipvsadm -A -t 192.168.1.110:23 -s rr
+<P>With an httpd listening on the VIP (192.168.1.110:80) of the
+director (192.168.1.1) AND with _no_ entries in the ipvsadm
+table, the director appears as a normal non-LVS node and you can
+connect to this service at 192.168.1.110:80 from an outside
+client. If you then add an external real-server to the ipvsadm
+table in the normal manner with
+<P>/sbin/ipvsadm -a -t 192.168.1.110:80 -r 192.168.1.2
+<P>then connecting to 192.168.1.110:80 will display the webpage at
+the real-server 192.168.1.2:80 and not the director. This is
+easier to see if the pages are different (eg put the real IP of
+each machine at the top of the webpage).
+<P>Now comes the LocalNode part -
+<P>You can now add the director back into the ipvsadm table with
+<P>/sbin/ipvsadm -a -t 192.168.1.110:80 -r 127.0.0.1
+<P>(or replace 127.0.0.1 by another IP on the director)
+<P>Note, the port is the same for LocalNode. LocalNode is
+independant of the LVS mode (VS-NAT/Tun/DR) that you are using
+for the other IP:ports.
+<P>Shift-reloading the webpage at 192.168.1.110:80 will alternately
+display the wepages at the server 192.168.1.2 and the director at
+192.168.1.1 (if the scheduling is unweighted round robin). If you
+remove the (external) server with
+<P>/sbin/ipvsadm -d -t 192.168.1.110:80 -r 192.168.1.2
+<P>you will connect to the LVS only at the directors port.  The
+ipvsadm table will then look like
+<PRE>
+Protocol Local Addr:Port ==>
+                        Remote Addr           Weight ActiveConns TotalConns
+                        ...
+TCP      192.168.1.110:80 ==>
+                        127.0.0.1             2      3           3
+</PRE>
+<P>From the client, you cannot tell whether you are connecting
+directly to the 192.168.1.110:80 socket or through the LVS code.
+<P>
+<HR>
+<A HREF="LVS-HOWTO-15.html">Next</A>
+<A HREF="LVS-HOWTO-13.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc14">Contents</A>
+</BODY>
+</HTML>

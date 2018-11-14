@@ -1,0 +1,333 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO</TITLE>
+ <LINK HREF="LVS-HOWTO-1.html" REL=next>
+
+
+</HEAD>
+<BODY>
+<A HREF="LVS-HOWTO-1.html">Next</A>
+Previous
+Contents
+<HR>
+<H1>LVS-HOWTO</H1>
+
+<H2>Joseph Mack (C) 1999-2001, released under GPL <CODE>jmack@wm7d.net</CODE></H2>v1.4, May 2001
+<P><HR>
+<EM>Install, testing and running of a Linux Virtual Server with 2.2.x and 2.4.x kernels</EM>
+<HR>
+<P>
+<H2><A NAME="toc1">1.</A> <A HREF="LVS-HOWTO-1.html">Introduction</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-1.html#ss1.1">1.1 ChangeLog</A>
+<LI><A HREF="LVS-HOWTO-1.html#ss1.2">1.2 Purpose of this HOWTO</A>
+<LI><A HREF="LVS-HOWTO-1.html#ss1.3">1.3 Nomenclature/Abbreviations</A>
+<LI><A HREF="LVS-HOWTO-1.html#ss1.4">1.4 What is an LVS?</A>
+<LI><A HREF="LVS-HOWTO-1.html#ss1.5">1.5 Minimal knowledge required</A>
+<LI><A HREF="LVS-HOWTO-1.html#ss1.6">1.6 LVS Failure</A>
+<LI><A HREF="LVS-HOWTO-1.html#ss1.7">1.7 Thanks</A>
+<LI><A HREF="LVS-HOWTO-1.html#ss1.8">1.8 Mailing list, subscribing, unsubscribing and searchable archives</A>
+<LI><A HREF="LVS-HOWTO-1.html#ss1.9">1.9 getting technical help</A>
+<LI><A HREF="LVS-HOWTO-1.html#ss1.10">1.10 Posting problems/questions to the mailing list</A>
+<LI><A HREF="LVS-HOWTO-1.html#ss1.11">1.11 ToDo List</A>
+<LI><A HREF="LVS-HOWTO-1.html#ss1.12">1.12 Other load balancing solutions</A>
+<LI><A HREF="LVS-HOWTO-1.html#ss1.13">1.13 Software/Information useful/related to LVS</A>
+</UL>
+<P>
+<H2><A NAME="toc2">2.</A> <A HREF="LVS-HOWTO-2.html">Getting Files</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-2.html#ss2.1">2.1 Director Code </A>
+<LI><A HREF="LVS-HOWTO-2.html#ss2.2">2.2 RealServer Code</A>
+<LI><A HREF="LVS-HOWTO-2.html#ss2.3">2.3 Configure Script</A>
+</UL>
+<P>
+<H2><A NAME="toc3">3.</A> <A HREF="LVS-HOWTO-3.html">The arp Problem</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-3.html#ss3.1">3.1 The problem</A>
+<LI><A HREF="LVS-HOWTO-3.html#ss3.2">3.2 The cure(s)</A>
+<LI><A HREF="LVS-HOWTO-3.html#ss3.3">3.3 The ARP problem, the first inklings</A>
+<LI><A HREF="LVS-HOWTO-3.html#ss3.4">3.4 A posting to the mailinglist by Peter Kese</A>
+<LI><A HREF="LVS-HOWTO-3.html#ss3.5">3.5 random mailings on the arp problem</A>
+<LI><A HREF="LVS-HOWTO-3.html#ss3.6">3.6 Is the arp behaviour of 2.2.x kernel a bug?</A>
+<LI><A HREF="LVS-HOWTO-3.html#ss3.7">3.7 How to tell if an interface is replying to arp requests</A>
+<LI><A HREF="LVS-HOWTO-3.html#ss3.8">3.8 Arp caching defeats Heartbeat switchover</A>
+<LI><A HREF="LVS-HOWTO-3.html#ss3.9">3.9 More on the arp problem</A>
+<LI><A HREF="LVS-HOWTO-3.html#ss3.10">3.10 Properties of devices for the VIP</A>
+<LI><A HREF="LVS-HOWTO-3.html#ss3.11">3.11 Topologies for VS-DR and VS-Tun LVS's</A>
+<LI><A HREF="LVS-HOWTO-3.html#ss3.12">3.12 A discussion about the arp problem</A>
+<LI><A HREF="LVS-HOWTO-3.html#ss3.13">3.13 ATM/ethernet and router problems</A>
+</UL>
+<P>
+<H2><A NAME="toc4">4.</A> <A HREF="LVS-HOWTO-4.html">Collect Hardware</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-4.html#ss4.1">4.1 minimum setup</A>
+<LI><A HREF="LVS-HOWTO-4.html#ss4.2">4.2 Gotchas</A>
+<LI><A HREF="LVS-HOWTO-4.html#ss4.3">4.3 Test with telnet (or netcat)</A>
+</UL>
+<P>
+<H2><A NAME="toc5">5.</A> <A HREF="LVS-HOWTO-5.html">Choose LVS Forwarding Type</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-5.html#ss5.1">5.1 Comparison of VS-NAT, VS-DR and VS-Tun</A>
+<LI><A HREF="LVS-HOWTO-5.html#ss5.2">5.2 Expected LVS performance</A>
+<LI><A HREF="LVS-HOWTO-5.html#ss5.3">5.3 Initial setup steps</A>
+</UL>
+<P>
+<H2><A NAME="toc6">6.</A> <A HREF="LVS-HOWTO-6.html">Install - General</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-6.html#ss6.1">6.1 Director</A>
+<LI><A HREF="LVS-HOWTO-6.html#ss6.2">6.2 Real-servers</A>
+<LI><A HREF="LVS-HOWTO-6.html#ss6.3">6.3 iptables/ipchains compatability problems</A>
+</UL>
+<P>
+<H2><A NAME="toc7">7.</A> <A HREF="LVS-HOWTO-7.html">Ipvsadm</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-7.html#ss7.1">7.1 Using ipvsadm</A>
+<LI><A HREF="LVS-HOWTO-7.html#ss7.2">7.2 Compile ipvsadm for each new ipvs</A>
+<LI><A HREF="LVS-HOWTO-7.html#ss7.3">7.3 schedulers</A>
+<LI><A HREF="LVS-HOWTO-7.html#ss7.4">7.4 does rr equally distribute the load?</A>
+<LI><A HREF="LVS-HOWTO-7.html#ss7.5">7.5 persistent connections</A>
+<LI><A HREF="LVS-HOWTO-7.html#ss7.6">7.6 Changing weights with ipvsadm</A>
+<LI><A HREF="LVS-HOWTO-7.html#ss7.7">7.7 experimental scheduling code</A>
+</UL>
+<P>
+<H2><A NAME="toc8">8.</A> <A HREF="LVS-HOWTO-8.html">Fwmarks</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.1">8.1 Introduction</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.2">8.2 single port service: telnet with fwmarks</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.3">8.3 Grouping services: single group, active ftp(20,21)</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.4">8.4 Grouping services: two groups, active ftp(20,21) and e-commerce(80,443)</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.5">8.5 passive ftp</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.6">8.6 fwmark with VS-NAT</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.7">8.7 Collisions between fwmark and VIP rules</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.8">8.8 persistence granularity with fwmark</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.9">8.9 fwmark allows VS-DR director to be default gw for real-servers</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.10">8.10 Routing to director and real-servers in an LVS setup with fwmark</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.11">8.11 fwmark simplifies configuration for large numbers of addresses</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.12">8.12 Example: firewall farm</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.13">8.13 Example: LVS'ing a CIDR block</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.14">8.14 Example: forwarding based on client source IP</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.15">8.15 Example: load balancing multiple class C networks</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.16">8.16 Example: proxy server</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.17">8.17 Example: transparent web cache</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.18">8.18 Example: Dynamically generated images in webpages</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.19">8.19 Appendix 1: Specificiations for grouping of services with fwmarks</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.20">8.20 Appendix 2: Demonstration of grouping services with fwmarks</A>
+<LI><A HREF="LVS-HOWTO-8.html#ss8.21">8.21 Appendix 3: Announcement of grouping services with fwmarks</A>
+</UL>
+<P>
+<H2><A NAME="toc9">9.</A> <A HREF="LVS-HOWTO-9.html">Configure tools</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-9.html#ss9.1">9.1 Configure</A>
+</UL>
+<P>
+<H2><A NAME="toc10">10.</A> <A HREF="LVS-HOWTO-10.html">Services</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.1">10.1 setting up a new service</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.2">10.2 services must be setup for forwarding type</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.3">10.3 ftp general</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.4">10.4 ftp (active) - the classic command line ftp</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.5">10.5 ftp (passive)</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.6">10.6 ftp is difficult to secure</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.7">10.7 evaluation of SuSE ftp proxy</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.8">10.8 telnet</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.9">10.9 ssh</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.10">10.10 dns</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.11">10.11 sendmail/smtp/pop3/qmail</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.12">10.12 authd/identd (port 113) and tcpwrappers (tcpd)</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.13">10.13 http name and IP-based (with VS-DR or VS-Tun)</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.14">10.14 http with VS-NAT</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.15">10.15 httpd normally closes connections</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.16">10.16 Persistence with http; browser opens many connections to httpd</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.17">10.17 Dynamically generated images on web pages</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.18">10.18 other considerations with http: logs, shutting down httpd, cookies, mod_proxy, indexing programs</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.19">10.19 https</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.20">10.20 Databases</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.21">10.21 Cookies</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.22">10.22 r commands; rsh, rcp, and their ssh replacements</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.23">10.23 nfs</A>
+<LI><A HREF="LVS-HOWTO-10.html#ss10.24">10.24 RealNetworks streaming protocols</A>
+</UL>
+<P>
+<H2><A NAME="toc11">11.</A> <A HREF="LVS-HOWTO-11.html">VS-NAT</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-11.html#ss11.1">11.1 Introduction</A>
+<LI><A HREF="LVS-HOWTO-11.html#ss11.2">11.2 Example Two Network VS-NAT (VIP and RIPs on different network)</A>
+<LI><A HREF="LVS-HOWTO-11.html#ss11.3">11.3 All packets from the real-server to the outside world must go through the director</A>
+<LI><A HREF="LVS-HOWTO-11.html#ss11.4">11.4 Run configure</A>
+<LI><A HREF="LVS-HOWTO-11.html#ss11.5">11.5 How VS-NAT works</A>
+<LI><A HREF="LVS-HOWTO-11.html#ss11.6">11.6 In VS-NAT, how do packets get back to the client, or how does the</A>
+<LI><A HREF="LVS-HOWTO-11.html#ss11.7">11.7 Performance of VS-NAT</A>
+<LI><A HREF="LVS-HOWTO-11.html#ss11.8">11.8 One network VS-NAT</A>
+<LI><A HREF="LVS-HOWTO-11.html#ss11.9">11.9 Various debugging techniques for routes</A>
+<LI><A HREF="LVS-HOWTO-11.html#ss11.10">11.10 Postings from the mailing list</A>
+</UL>
+<P>
+<H2><A NAME="toc12">12.</A> <A HREF="LVS-HOWTO-12.html">VS-DR</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-12.html#ss12.1">12.1 How VS-DR works</A>
+<LI><A HREF="LVS-HOWTO-12.html#ss12.2">12.2 Handling the arp problem for VS-DR</A>
+<LI><A HREF="LVS-HOWTO-12.html#ss12.3">12.3 VS-DR scales well</A>
+<LI><A HREF="LVS-HOWTO-12.html#ss12.4">12.4 VS-DR director is default gw for real-servers</A>
+<LI><A HREF="LVS-HOWTO-12.html#ss12.5">12.5 default gw(s) and routing with VS-DR/VS-Tun</A>
+<LI><A HREF="LVS-HOWTO-12.html#ss12.6">12.6 routing to real-server from director</A>
+</UL>
+<P>
+<H2><A NAME="toc13">13.</A> <A HREF="LVS-HOWTO-13.html">VS-Tun</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-13.html#ss13.1">13.1 How VS-Tun works</A>
+<LI><A HREF="LVS-HOWTO-13.html#ss13.2">13.2 Configure VS-Tun</A>
+<LI><A HREF="LVS-HOWTO-13.html#ss13.3">13.3 Real-servers on different network(s) to director</A>
+<LI><A HREF="LVS-HOWTO-13.html#ss13.4">13.4 VS-Tun Questions</A>
+</UL>
+<P>
+<H2><A NAME="toc14">14.</A> <A HREF="LVS-HOWTO-14.html">localnode</A></H2>
+
+<P>
+<H2><A NAME="toc15">15.</A> <A HREF="LVS-HOWTO-15.html">Transparent proxy (TP or Horms' method)</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-15.html#ss15.1">15.1 General</A>
+<LI><A HREF="LVS-HOWTO-15.html#ss15.2">15.2 How you use TP</A>
+<LI><A HREF="LVS-HOWTO-15.html#ss15.3">15.3 Transparent proxy for 2.4.x</A>
+<LI><A HREF="LVS-HOWTO-15.html#ss15.4">15.4 Transparent proxy Q&amp;A</A>
+<LI><A HREF="LVS-HOWTO-15.html#ss15.5">15.5 Identd doesn't delay connection with when packets are received by TP on 2.4.x real-servers</A>
+<LI><A HREF="LVS-HOWTO-15.html#ss15.6">15.6 What IP TP packets arriving on?</A>
+<LI><A HREF="LVS-HOWTO-15.html#ss15.7">15.7 Take home lesson for setting up TP on real-servers</A>
+<LI><A HREF="LVS-HOWTO-15.html#ss15.8">15.8 Handling identd requests from 2.4.x VS-DR real-servers using TP</A>
+<LI><A HREF="LVS-HOWTO-15.html#ss15.9">15.9 Performance of Transparent Proxy</A>
+</UL>
+<P>
+<H2><A NAME="toc16">16.</A> <A HREF="LVS-HOWTO-16.html">Authd/Identd </A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-16.html#ss16.1">16.1 What is authd/identd?</A>
+<LI><A HREF="LVS-HOWTO-16.html#ss16.2">16.2 comp.os.linux.security FAQ on identd</A>
+<LI><A HREF="LVS-HOWTO-16.html#ss16.3">16.3 Why identd is a problem for LVS</A>
+<LI><A HREF="LVS-HOWTO-16.html#ss16.4">16.4 tcpdumps of connections delayed by identd</A>
+<LI><A HREF="LVS-HOWTO-16.html#ss16.5">16.5 There are solutions to identd problem in some cases</A>
+<LI><A HREF="LVS-HOWTO-16.html#ss16.6">16.6 Turn off tcpwrappers</A>
+<LI><A HREF="LVS-HOWTO-16.html#ss16.7">16.7 Identd and smtp/pop/qmail</A>
+</UL>
+<P>
+<H2><A NAME="toc17">17.</A> <A HREF="LVS-HOWTO-17.html">Squid Real-Servers (poor man's L7 switch)</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-17.html#ss17.1">17.1 Terminology</A>
+<LI><A HREF="LVS-HOWTO-17.html#ss17.2">17.2 Preview</A>
+<LI><A HREF="LVS-HOWTO-17.html#ss17.3">17.3 Let's start assembling</A>
+<LI><A HREF="LVS-HOWTO-17.html#ss17.4">17.4 One squid</A>
+<LI><A HREF="LVS-HOWTO-17.html#ss17.5">17.5 Another squid</A>
+<LI><A HREF="LVS-HOWTO-17.html#ss17.6">17.6 Combining pieces with LVS</A>
+<LI><A HREF="LVS-HOWTO-17.html#ss17.7">17.7 Problems</A>
+</UL>
+<P>
+<H2><A NAME="toc18">18.</A> <A HREF="LVS-HOWTO-18.html">Details of LVS operation</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-18.html#ss18.1">18.1 Director Hash Table</A>
+<LI><A HREF="LVS-HOWTO-18.html#ss18.2">18.2 Port range limitations</A>
+<LI><A HREF="LVS-HOWTO-18.html#ss18.3">18.3 DoS</A>
+<LI><A HREF="LVS-HOWTO-18.html#ss18.4">18.4 Active/Inactive connnection</A>
+<LI><A HREF="LVS-HOWTO-18.html#ss18.5">18.5 Creating large numbers of InActConn with testlvs; testing DoS strategies</A>
+<LI><A HREF="LVS-HOWTO-18.html#ss18.6">18.6 Debugging LVS</A>
+<LI><A HREF="LVS-HOWTO-18.html#ss18.7">18.7 Security Issues</A>
+<LI><A HREF="LVS-HOWTO-18.html#ss18.8">18.8 MTU discovery</A>
+<LI><A HREF="LVS-HOWTO-18.html#ss18.9">18.9 ICMP handling</A>
+<LI><A HREF="LVS-HOWTO-18.html#ss18.10">18.10 Filesystems for real-server content: the many reader, single writer problem</A>
+</UL>
+<P>
+<H2><A NAME="toc19">19.</A> <A HREF="LVS-HOWTO-19.html">Failover protection</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-19.html#ss19.1">19.1 Director failure</A>
+<LI><A HREF="LVS-HOWTO-19.html#ss19.2">19.2 Real-server failure</A>
+<LI><A HREF="LVS-HOWTO-19.html#ss19.3">19.3 Service/real-server failout</A>
+<LI><A HREF="LVS-HOWTO-19.html#ss19.4">19.4 Mon for server/service failout</A>
+<LI><A HREF="LVS-HOWTO-19.html#ss19.5">19.5 BIG CAVEAT</A>
+<LI><A HREF="LVS-HOWTO-19.html#ss19.6">19.6 About Mon</A>
+<LI><A HREF="LVS-HOWTO-19.html#ss19.7">19.7 Mon Install</A>
+<LI><A HREF="LVS-HOWTO-19.html#ss19.8">19.8 Mon Configure</A>
+<LI><A HREF="LVS-HOWTO-19.html#ss19.9">19.9 Testing mon without LVS</A>
+<LI><A HREF="LVS-HOWTO-19.html#ss19.10">19.10 Can virtualserver.alert send commands to LVS?</A>
+<LI><A HREF="LVS-HOWTO-19.html#ss19.11">19.11 Running mon with LVS</A>
+<LI><A HREF="LVS-HOWTO-19.html#ss19.12">19.12 Why is the LVS monitored for failures by an external agent rather than by the kernel?</A>
+</UL>
+<P>
+<H2><A NAME="toc20">20.</A> <A HREF="LVS-HOWTO-20.html">Misc/FAQ/Wisdom from the mailing list</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.1">20.1 Setting up an LVS with inetd</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.2">20.2 How to bring down a real-server for maintenance (eg swap disks)</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.3">20.3 Howto turn your single node ftp/http server into an LVS without taking it off-line</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.4">20.4 Other projects like LVS - Beowulf</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.5">20.5 Projects like LVS - Eddie</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.6">20.6 Troubles with tulip cards</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.7">20.7 About PPC (persistent port connection) (for 2.2.12 kernels)</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.8">20.8 Related to PPC - Sticky connections</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.9">20.9 Thundering herd problem, when down machine(s) come on line</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.10">20.10 on the need for extended testing</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.11">20.11 loopback on Solaris</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.12">20.12 Having one director handling multiple LVS sites</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.13">20.13 Running multiple directors (each with their own IP)</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.14">20.14 Running clients (eg telnet) on real-servers</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.15">20.15 Setting up NAT clients on VS-DR real-servers</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.16">20.16 Timeouts</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.17">20.17 tcpdump</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.18">20.18 Bringing down aliased devices </A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.19">20.19 Backing up real-servers/keeping in sync</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.20">20.20 Malicious attacks (SYN floods)</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.21">20.21 Does SMP help on the director?</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.22">20.22 Multiple IPs on the Director</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.23">20.23 Expanding port number range</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.24">20.24 Performance Hints from the Squid people</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.25">20.25 Problems with large uptimes</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.26">20.26 Testimonials</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.27">20.27 Transport Layer Security(TLS)</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.28">20.28 rcp and friends on LVS (better to use ssh)</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.29">20.29 Forwarding an httpd request based on file name not load (mod_proxy)</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.30">20.30 URL parsing</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.31">20.31 can I run my ipchains firewall and LVS on the same box?</A>
+<LI><A HREF="LVS-HOWTO-20.html#ss20.32">20.32 Setting up a hot spare server</A>
+</UL>
+<P>
+<H2><A NAME="toc21">21.</A> <A HREF="LVS-HOWTO-21.html">Useful things that have other place (yet)</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-21.html#ss21.1">21.1 Files which are kernel version dependant eg System.map and ipvsadm</A>
+<LI><A HREF="LVS-HOWTO-21.html#ss21.2">21.2 Ramdisk</A>
+<LI><A HREF="LVS-HOWTO-21.html#ss21.3">21.3 cscope</A>
+</UL>
+<P>
+<H2><A NAME="toc22">22.</A> <A HREF="LVS-HOWTO-22.html">FAQ</A></H2>
+
+<UL>
+<LI><A HREF="LVS-HOWTO-22.html#ss22.1">22.1 Help! My LVS doesn't work</A>
+<LI><A HREF="LVS-HOWTO-22.html#ss22.2">22.2 My LVS doesn't work: ipvsadm shows entries in InActConn, but none in ActiveConn</A>
+<LI><A HREF="LVS-HOWTO-22.html#ss22.3">22.3 initial connection is delayed, but once connected everything is fine</A>
+<LI><A HREF="LVS-HOWTO-22.html#ss22.4">22.4 How fast/big should my director be</A>
+<LI><A HREF="LVS-HOWTO-22.html#ss22.5">22.5 Does the director handle ICMP?</A>
+<LI><A HREF="LVS-HOWTO-22.html#ss22.6">22.6 I get "connection refused" from the client</A>
+<LI><A HREF="LVS-HOWTO-22.html#ss22.7">22.7 Any recommendations for a NIC?</A>
+<LI><A HREF="LVS-HOWTO-22.html#ss22.8">22.8 Does SMP help?</A>
+</UL>
+<HR>
+<A HREF="LVS-HOWTO-1.html">Next</A>
+Previous
+Contents
+</BODY>
+</HTML>

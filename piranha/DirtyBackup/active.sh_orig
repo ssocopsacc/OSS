@@ -1,0 +1,75 @@
+#!/bin/sh
+
+lockdir=/tmp/active.lock
+SCRIPTNAME="ACTIVE"
+mkdir "${lockdir}" & >/dev/null
+ret=$?
+if [ $ret == 0 ]; then
+  echo "[$SCRIPTNAME]Locking succeeded" >> /tmp/hanodestate.log
+  trap 'rm -rf "$lockdir"; exit $?' INT TERM EXIT
+else
+  echo "[$SCRIPTNAME]Lock failed. Active Script Already Running exiting." >> /tmp/hanodestate.log
+  exit 1
+fi
+
+echo `date` ":Active script called" >> /tmp/hanodestate.log
+
+for i in `pgrep inactive`
+do 
+	kill -15 $i
+	echo "[$SCRIPTNAME] kill Inactive script" >> /tmp/hanodestate.log
+done
+rm -rf /tmp/inactive.lock
+
+pgrep commDemon
+if [ $? != 0 ]; then
+        pkill commDemon
+        rm -rf /home/fes/commDemon.txt
+        /home/fes/commDemon
+fi
+
+VIPADDRESS=`awk 'BEGIN{VIPADDRS="NONE";gotoloop=0;} {if($1== "virtual" ){if(gotoloop ==  0 ){gotoloop=1;} else{gotoloop=0;}} if(gotoloop == 1) { if ($1=="address"){VIPADDRS=$3;gotoloop=0;}} }END{printf("VIPADDRESS=%s",VIPADDRS) > "/tmp/ipaddr";print VIPADDRS;}' /etc/sysconfig/ha/lvs.cf`
+
+echo "[$SCRIPTNAME]Flushing ARP tables, iptables..." >> /tmp/hanodestate.log
+
+/etc/init.d/arptables_jf stop
+arptables -F
+iptables -t nat -F
+
+echo "[$SCRIPTNAME]Stopping FileSync and InfoAgent." >> /tmp/hanodestate.log
+
+/home/fes/SyncBinary Kill
+if [ $? != 0 ]; then
+	echo "[$SCRIPTNAME]Failed To Stop Agents..Check If CommandDaemon Is Running."	
+fi
+
+sleep 7
+
+echo "[$SCRIPTNAME]Starting FileSync And InfoAgent daemons." >> /tmp/hanodestate.log
+
+rm -rf /home/fes/filesync.conf
+
+/home/fes/SyncBinary Active
+if [ $? != 0 ]; then
+        echo "[$SCRIPTNAME]Failed To Start Agents..Check If CommandDaemon Is Running."
+fi
+
+arp -d $VIPADDRESS
+
+service mysqld status
+RETVAL=$?
+if [ $RETVAL != 0 ] ; then
+		echo "[$SCRIPTNAME]Database service is not started. starting Database services..." >> /tmp/hanodestate.log
+        service mysqld restart
+fi
+
+service mysqld start
+
+service piranha-gui restart > /dev/null 2>&1
+
+echo "[$SCRIPTNAME]All services started." >> /tmp/hanodestate.log
+rm -rf "$lockdir"
+
+echo "[$SCRIPTNAME]Active command finished by master LVD[$VIPADDRESS]" >>/tmp/hanodestate.log
+
+exit 0

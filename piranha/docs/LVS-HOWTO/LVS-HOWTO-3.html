@@ -1,0 +1,1732 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO: The arp Problem</TITLE>
+ <LINK HREF="LVS-HOWTO-4.html" REL=next>
+ <LINK HREF="LVS-HOWTO-2.html" REL=previous>
+ <LINK HREF="LVS-HOWTO.html#toc3" REL=contents>
+</HEAD>
+<BODY>
+<A HREF="LVS-HOWTO-4.html">Next</A>
+<A HREF="LVS-HOWTO-2.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc3">Contents</A>
+<HR>
+<H2><A NAME="arp_problem"></A> <A NAME="s3">3. The arp Problem</A></H2>
+
+<P>
+<P>
+<H2><A NAME="ss3.1">3.1 The problem</A>
+</H2>
+
+<P>
+<P>If you follow the instructions and setup the examples 
+in the LVS-mini-HOWTO, then you don't need to know about the arp problem.
+Although this section comes early in the HOWTO, it has lots of pitfalls.
+You shouldn't be reading this unless you've at least setup a working
+VS-NAT (and maybe VS-DR) LVS using the canned instructions in the mini-HOWTO.
+<P>If you're going to setup grander LVS's, then you'll need to understand 
+the arp problem. 
+<P>I've tried to arrange this section so that the more general information
+comes first and specific problems drawing on this information come later.
+<P>The LVS allows several machines to function as one machine. 
+For VS-DR and VS-Tun some trickery
+was needed to split the various handshakes etc involved in establishing
+and maintaining a tcpip connection so that some parts of it came from one
+machine and other parts from another machine. 
+Most of these problems are handled,
+and some problems only occur for certain services 
+(eg 
+<A HREF="LVS-HOWTO-16.html#authd">identd</A>) and we've learned to live with them.
+The worst problem, which ironically 
+happens with real-servers running Linux 2.2.x and 2.4.x kernels, 
+is the "arp problem" (it's just as well we have the source code). 
+<P>With VS-DR and VS-Tun, all the machines (director, real-servers)
+in the LVS have an extra IP, the VIP. Here's a VS-DR in a test setup where
+all machines and IPs are on the same network. 
+<P>
+<P>
+<BLOCKQUOTE><CODE>
+<HR>
+<PRE>
+
+                        ________
+                       |        |
+                       | client |
+                       |________|
+                           |
+                           |
+                        (router)
+                           |
+                           |
+                           |       __________
+                           |  DIP |          |
+                           |------| director |
+                           |  VIP |__________|
+                           |
+                           |
+                           |
+         ------------------------------------
+         |                 |                |
+         |                 |                |
+     RIP1, VIP         RIP2, VIP        RIP3, VIP
+   ______________    ______________    ______________
+  |              |  |              |  |              |
+  | real-server1 |  | real-server2 |  | real-server3 |
+  |______________|  |______________|  |______________|
+
+</PRE>
+<HR>
+</CODE></BLOCKQUOTE>
+<P>When the client requests a connection to the VIP, it must connect
+to the VIP on the director and not to the VIP on the real-servers.
+<P>
+<P>The director box acts as an IP router, accepting packets destined
+for the VIP and then sending them on to a real-server (where the real
+work is done and a reply is generated). 
+When the client (or router) puts out the arp request
+"who has VIP, tell client", the client/router must receive the MAC address
+of the director for the LVS to work. After receiving the arp reply,
+the client will send the connect request to the director.
+(The director will then forward the connect request packet 
+to the appropriate real-server and update its internal tables 
+to keep track of connections). 
+If the client instead gets the MAC address of one of the real-servers, then
+the packets will be sent directly to that real-server, bypassing the LVS
+action of the director. 
+If nothing is done to direct arp requests for the VIP specifically to the director, 
+then in some setups, 
+one particular real-server's MAC address will be in the client/router's 
+arp table for the VIP and the client will only see one real-server. 
+(In my setup, the machine with the fastest CPU is
+in the client's arp table, suggesting that it's the first machine to reply
+that gets in. Horms and Steven WIlliams have written that they think 
+it's the last machine to reply whose entry in in the client's arp table.)
+In other setups where the real-servers are identical, 
+the client will connect to different real-servers each time the
+arp cache times out (see comment by Steven WIlliams elsewhere). 
+There the client's connection will hang as the new real-server
+will be presented with packets from an established connection that it knows
+nothing about. 
+If the director always gets its MAC address in the router arp table, 
+then the LVS will work without any changes to the real-servers
+(as happened in my case), although this may not be a reliable
+solution for production.
+<P>
+<P>Getting the MAC address of the director (instead of the real-servers) to the
+client when the client/router does an arp request is the key to solving the
+"arp problem".
+<P>
+<P>The arp problem is handled in 2.0.x kernels 
+as serveral devices which don't reply to arp requests (eg dummy0, tunl0, lo:0)
+were available for the the VIP. 
+For other OS's, the NOARP flag for ifconfig would stop the VIP 
+on the real-servers from replying to arp requests.
+<P>
+<P>However with 2.2.x (and now 2.4.x) kernels, the devices which didn't reply
+to arp requests in 2.0.x, now reply to arp requests.
+There is a "-arp" (NOARP) option for ifconfig which (according
+to the man pages) turns off replies to arp requests for that
+device, and an "arp" option which turns them back on again.
+Linux does not always honour this flag (you couldn't turn on replies
+to arp requests for the dummy0 devices in 2.0.36 kernels and
+you can't turn it off for tunl0 in 2.2.x kernels. eth0 behaves
+properly in 2.0.36 but in 2.2.x kernels it arps even when you
+tell it not to arp). This behaviour of not honouring the NOARP
+flag in the Linux 2.2.x kernels is not regarded as a "problem"
+by those writing the Linux TCPIP code and is not going to be "fixed".
+<P>
+<P>Another wrinkle is that in 2.0.36 kernels, aliased devices
+(eg eth0:1) could be setup independantly of the options on
+the primary (eth0) device. Thus eth0:1 behaved as if it were
+on a separate NIC and it's arp'ing behaviour could be set
+independantly of the primary interface. The settings of
+an aliased device belonged to the IP. With the 2.2.x
+kernels, the aliased devices are now just alternate names for each
+other: you change an option (eg -arp) or up/down of one
+alias (or primary) the other aliases follow. With 2.2.x
+kernels, the settings of the aliased device belong to the
+primary device (there is only one device with several
+IPs).
+<P>
+<P>When LVS was running on 2.0.36 machines, the VIP was usually
+configured as an alias (eg lo:0, tunl0) on the main ethernet
+device (eth0), allowing the nodes in an LVS to have only one
+NIC.
+<P>
+<P>With 2.2.x kernels care is needed when only one NIC is used
+on the real-server (the usual case). 
+On a real-server with eth0 carrying the RIP,
+and the real-server having only one NIC, eth0 must reply to
+arp requests (to receive packets), then eth0:1 carrying the
+VIP will reply to arp requests too, even if you ifconfig it
+with -noarp. Thus if a real-server is running a 2.2.x kernel
+and has the VIP on an ip_alias, then the VIP on the real-server
+will reply to arp requests received from the router.
+<P>
+<P>
+<H2><A NAME="ss3.2">3.2 The cure(s)</A>
+</H2>
+
+<P>
+<P>Several cures have been produced in an
+attempt to solve the arp problem. They involve either
+<P>
+<P>
+<UL>
+<LI>stopping the real-servers from replying to arp requests for
+the VIP.
+</LI>
+<LI>hiding the VIP on the real-servers so that they don't see
+the arp requests.
+</LI>
+<LI>priming the client/router in front of the director with the
+correct MAC address for the VIP.
+</LI>
+<LI>allowing the real-server to accept a packet with dst=VIP even
+though the real-server does not have a device with this IP.
+</LI>
+<LI> 
+stopping arp requests for the VIP getting to the real-servers.
+</LI>
+</UL>
+<P>Pick one - 
+<P>Note: Some of these cures involve applying a patch to the kernel on the
+Linux 2.2.x or 2.4.x real-server. 
+This patch is different to the ipvs patch which you apply to the director. 
+<P>
+<H3><A NAME="2.2_arp"></A> 2.2.x kernels</H3>
+
+<P>
+<P>The &quot;hidden&quot; patches for kernel &gt;=2.2.14 
+are now in the standard linux distribution 
+(ie you can use the &quot;hidden&quot; feature with a standard kernel and
+don't have to patch the kernel on the real-server anymore). 
+The arp patches allow you to hide a device from arp requests, 
+returning to the no_arp behaviour of the 2.0.x kernels. 
+<P>To hide devices from arp calls
+<A NAME="hidden"></A> , on the real-servers do
+<P>
+<PRE>
+       #to activate the hidden feature
+       echo 1 > /proc/sys/net/ipv4/conf/all/hidden
+       #to make lo:0 -arp, put lo here
+       echo 1 > /proc/sys/net/ipv4/conf/&lt;interface_name>/hidden
+</PRE>
+<P>To test that the network device (here lo:0) is hidden from arp requests -
+<P>
+<UL>
+<LI>before you hide the lo:0, ping the VIP 
+from another machine, then run arp -a and see that the MAC address
+for the VIP matches that for eth0 on the real-server</LI>
+<LI>Clear the entry for the VIP with "arp -d VIP", 
+and show that the arp entry is gone for the VIP (with arp -a)</LI>
+<LI>ping the VIP and look for the reappearance of the arp entry for the VIP. </LI>
+<LI>Then hide the lo interface and ping the VIP again from the outside machine. 
+The VIP will most likely reply to the ping since the entry for the VIP is
+still in the arp table of the outside machine. </LI>
+<LI>Clear the arp entry (arp -d VIP) and ping the VIP again - this time you'll get no reply.</LI>
+</UL>
+<P>There is a possible race condition in hiding the VIP - 
+<P>On Thu, 15 Feb 2001, Kyle Sparger wrote:
+<P>
+<BLOCKQUOTE>
+I've found an interesting, but not totally unexpected race condition
+under DR in 2.2.x that I've managed to create when installing VIP's on a
+machine in DR mode.
+<P>
+<P>Basically, the cause is this:
+</BLOCKQUOTE>
+<P>
+<PRE>
+ifconfig dummy0 10.0.1.15
+echo 1 > /proc/sys/net/ipv4/conf/dummy0/hidden
+</PRE>
+<P>
+<P>
+<BLOCKQUOTE>
+You'll notice that there's going to be a small gap between the two which
+allows an ARP request to come in, and for the server to reply.  And yes,
+it is big enough to be bitten by -- I've been bitten twice by it so far :)
+</BLOCKQUOTE>
+<P>Julian
+<P>On boot:
+<PRE>
+        echo 1 > /proc/sys/net/ipv4/conf/all/hidden
+
+        # For each hidden interface:
+        modprobe dummy0
+        ifconfig dummy0 0.0.0.0 up
+        echo 1 > /proc/sys/net/ipv4/conf/dummy0/hidden
+
+        # Now set any other IP address 
+</PRE>
+<P>Kyle's suggestion
+<P>
+<PRE>
+echo 1 > /proc/sys/net/ipv4/conf/default/hidden
+ifconfig dummy0 10.0.1.15
+echo 0 > /proc/sys/net/ipv4/conf/default/hidden
+</PRE>
+<P>
+<BLOCKQUOTE>
+The echo 0 command is incase I want to configure other 
+interfaces later that I _do_ want responding to ARP requests.  
+Technically, it's not necessary, I just find it useful in my particular setup.
+</BLOCKQUOTE>
+<P>For older kernels, 
+you apply the arp patches to the kernel code of the 2.2.x real-servers.
+These patches are separate from the ipvs patch applied to the kernel on
+the director.
+<P>For kernels &lt;2.2.12, Julian's patch is on the lvs website.
+<P>http://www.linuxvirtualserver.org/arp_invisible-2213-2.diff
+<P>The patch by Stephen WillIams is at
+<P>http://www.linuxvirtualserver.org/sdw_fullarpfix.patch
+<P>This patch is against a 2.2.5 kernel but can be applied to later kernels
+(tested to 2.2.13). The file appears to have DOS carriage control.
+Depending what you get on your disk, you may have to convert the file
+to unix carriage control (with `tr -d '\015'`) (the unix line extension
+of '\' doesn't work in combination with DOS carriage control).
+<P>The whitespace may not match your file so do
+<P>
+<PRE>
+
+$ cd /usr/src/linux
+$ patch -p1 -l &lt; sdw_fullarpfix.patch
+</PRE>
+<P>If you are running one of these old kernels, you could upgrade to your kernel.
+<P>
+<H3><A NAME="2.4_arp"></A> 2.4.x kernels</H3>
+
+<P>
+<P>Julian's hidden patch to the standard 2.2.x kernel is not being included in
+the 2.4.x kernels.
+<P>For early 2.4.x kernels (eg x=0), the patch is available at
+http://www.linuxvirtualserver.org/hidden-2.3.41-1.diff. 
+(This patches a part of the kernel that isn't being actively fiddled with,
+so hopefully the patch will work against later 2.4.x kernels too.)
+<P>The 2.4.x &quot;hidden&quot; patch in now being actively maintained and is 
+included in ipvs-x.x.x/contrib/patches/hidden-x.x.x.diff
+<P>Assuming you are patching 2.4.2 with the ipvs-0.2.5 files
+<PRE>
+cd /usr/src/linux
+patch -p1 &lt;../ipvs-0.2.5/contrib/patches/hidden-2.4.2-1.diff
+</PRE>
+<P>Then build the kernel (can use same options as for the 2.4 director kernel build).
+<P>You activate the hidden feature as for 2.2 (see 
+<A HREF="#hidden">hidden</A>).
+<P>As to why the hidden patch is in the 2.2 kernels but not the 2.4 kernels see
+the 
+<A HREF="http://marc.theaimsgroup.com/?l=linux-kernel&amp;m=98032243112274&amp;w=2">the mailing list archives</A> or for 
+<A HREF="http://marc.theaimsgroup.com/?t=98019795800013&amp;w=2&amp;r=1">the thread</A><P>
+<H3>Put an extra NIC on the real-server to carry the VIP (on eth1)</H3>
+
+<P>
+<P>Possible cards would be a discarded ISA card (WD80x3), or a cheap 100Mbit PCI
+card (eg Netgear FA310TX, $16 in USA in Nov 99) There is no traffic going
+through this NIC and it doesn't matter that it's an old slow card. The extra
+card is only required so that the real-server can have the VIP on the machine.
+With 2.2.x kernels you can't stop this device (eth1) from replying to arp
+requests, but if you don't connect the cable to it or don't put a route to
+it in the real-server's routing table, then the client won't be able to send
+it an arp request.
+<P>
+<P>
+<P>To set this up with the configure script, enter eth1 as the device for the
+VIP on the real-server.
+<P>
+<P>
+<H3>Put the real-servers on a different network to the VIP, and setup routing tables so that the client cannot route to this network (Lars' method)</H3>
+
+<P>
+<P>This method
+requires 2 NICS on the director and for the director to be a firewall 
+(see VS-DR, VS-Tun for details).
+<P>
+<P>
+<P>
+<H3>On the client(router), set the routing to the VIP to go only to the director</H3>
+
+<P>
+<P>You can hardwire the MAC address of the director
+as the MAC address of the VIP. You can do this with
+<P>
+<P>
+<PRE>
+#arp -s lvs.mack.net 00:80:C8:CA:A7:E4
+
+or 
+
+arp -f /etc/ethers.
+</PRE>
+<P>Here is my /etc/ethers file (on the client)
+<P>
+<PRE>
+lvs.mack.net 00:80:C8:CA:A7:E4
+</PRE>
+<P>This requires no extra NICs or patching of real-servers. However in a production
+environment, redundant directors with heartbeat/failover may be required and
+some method (eg running send-arp) will be needed to change the static arp entry
+as the failover occurs. If multiple NICs are involved, it is possible that 
+the above instruction will result in a route through the wrong NIC. In this
+case bring up the NIC of interest first and then run the above command.
+<P>Alternately if the router has serveral NICs, use one for the director and
+another for the real-servers. Route the VIP to the director.
+<P>
+<H3>Use transparent proxy allow the incoming packet to be accepted locally - Horms' method.</H3>
+
+<P>
+<P>see VS-DR and VS-Tun for details. 
+The configure script will set this up for you.
+<P>
+<P>
+<H2><A NAME="ss3.3">3.3 The ARP problem, the first inklings</A>
+</H2>
+
+<P>
+<P>History: ARP behaviour changed with 2.2.x kernels. Here's the
+original posting by Wensong
+<P>
+<PRE>
+Date: Wed, 24 Mar 1999
+From: Wensong Zhang &lt;tt/wensong@iinchina.net/
+Subject: The problem of Linux 2.2.3 tunnel device
+</PRE>
+<P>Today I upgraded the kernel to 2.2.3 with tunneling support on
+one of a real server, and found a problem that the Linux 2.2.3
+tunnel device answers ARP requests.  Even if I used the NOARP
+options as follows:
+<P>ifconfig tunl0 172.26.20.110 -arp netmask 255.255.255.255 broadcast 172.26.20.110
+<P>It still answers the ARP requests. This will greatly affect the
+virtual server via tunneling work properly.  In fact, the tunnel
+device shouldn't answer the ARP requests from the ethernet. I
+think it is a bug of linux/net/ipv4/ipip.c, which is now a clone
+of ip_gre.c not the original tunneling code.
+<P>If you are interested, you can test yourself on kernel 2.2.3,
+choose a free IP address of your ethernet and configure it on the
+tunl0 device, then telnet to that IP address from other host, I
+guess you can. Finally, have a look at the ipip.c, maybe you can
+debug it. :-) --
+<P>A reply to Wensong about the change in arp characteristics
+in 2.2 kernels, from Kuznet (2.2 tcpip author)
+<P>
+<PRE>
+From: kuznet@ms2.inr.ac.ru
+To: Wensong Zhang &lt;tt/wensong@iinchina.net/
+Cc: netdev@nuclecu.unam.mx
+Subject: Re: A little patch for linux/net/ipv4/arp.c for 2.2.5
+
+Hello!
+
+> But, what is the IFF_NOARP flag of the tunnel device for?
+
+IFF_NOARP means that ARP is not used by THIS device.
+On normal IPIP tunnels it does not make much of sense, but may be
+used f.e. to turn on/off endpoint reachability detection.
+
+I do not see any reasons to disable answering ARP in such
+curcumstances. Isolation of VPNs on adjucent segments is impossible
+at routing/arp level, it is just not well-defined behaviour.
+
+If the isolation is made with firewall policy rules, then
+it is clear that arp policy must be handled at this level too.
+
+> In kernel 2.0.x, the tunnel device doesn't answer ARP requests.
+
+Yes.
+
+> Yeah, we can have link-local addresses that doesn't answer ARP requests in
+> kernel 2.2.x. For example, we can configure all the hosts in a network
+> with the following command:
+>   ifconfig lo:0 192.168.0.10 up
+> There will no collision. The lookback alias interfaces don't answer ARP
+> requests.
+
+Are you sure? I am not. Please, test.
+
+BTW you risk adding non-loopback addresses on loopback device.
+They have the HIGHEST preference to be used as router identifier.
+so that VPN addresses cannot be added to loopback at all.
+
+> No, it doesn't fail. I tested it with kernel 2.0.36, it worked.
+
+It does not work under 2.2. To be honest, I am about to stop to understand
+you. You talk about 2.2, but all your tests are made for 2.0. 8)
+
+Alexey
+</PRE>
+
+--
+<P>
+<H2><A NAME="ss3.4">3.4 A posting to the mailinglist by Peter Kese</A>
+<CODE>peter.kese@ijs.si</CODE> explaining the "arp problem"</H2>
+
+<P>
+<P>(saved for posterity by Ted Pavlic, minor editing by Joe)
+<P>Before we start, let's assume we have following network
+configuration for an LVS running VS-DR.
+<P>
+<PRE>
+client          10.10.10.10
+
+gw              192.168.1.1
+
+director        192.168.1.10    IP for admin (director IP)
+                192.168.1.110   VIP (responds to arp requests)
+
+real server     192.168.1.11    IP to which each service is listening (real-server IP)
+                192.168.1.110   VIP (DOES NOT respond to arp requests)
+</PRE>
+<P>The virtualserver is the combination of the director and
+the real-server running LVS.
+<P>Or goal is:
+<P>
+<OL>
+<LI>Virtual server should respond to arp requests for both
+the VIP and the director IP.
+</LI>
+<LI> The real-server should respond to arp requests for the
+real-server IP but NOT the VIP.
+</LI>
+<LI> Gateway sends packets for the VIP to the director IP
+load balancer no matter what.</LI>
+</OL>
+<P>Problem 1: Interface aliases
+<P>Real-server and director need to have an interface with the VIP in
+order to respond to packets for virtual server. A real interface
+is not needed, an IP alias will do just fine and this interface
+alias could be either eth0:0 or lo:0.
+<P>On the 2.0 kernels, the ARP responding ability of an interface
+alias (eg eth0:0) could either be enabled or disabled
+independantly of the main (eth0) interface.  If you wanted eth0:0
+not to respond to ARP requests, you could simply say:
+<P>ifconfig eth0:0 192.168.1.2 -arp up
+<P>Thus in the 2.0 kernels it is possible, on a real-server, to have
+the real-server IP (on eth0) respond to arp requests and for the
+VIP (on eth0:0) to not respond.
+<P>In the 2.2 kernels this doesn't work any more. Whether the an
+interface alias responds to ARP requests or not, depends only on
+the way the real interface is configured.  So if eth0 responds to
+ARP requests (which it normally will), eth0:0 carrying the VIP
+will also respond to ARP requests no matter what.
+<P>This means an ethernet alias (eth0:0) is not permitted on real
+servers, because real servers should not respond ARP requests.
+<P>On the other hand, loopback aliases never respond ARP requests,
+which means that the loopback alias (lo:0) must not be used on
+the director for the VIP.
+<P>Problem 2: Loopback aliases
+<P>I haven't done much checking on loopback interface problem, but
+it seems that if an alias is used on a loopback interface (as is
+required for VS-DR) on a real server running kernel 2.2.x, the
+whole ARP gets screwed.
+<P>It appears that loopback interfaces get special ARP treatment in
+the kernel, so I suggest avoiding the loopback aliases as whole.
+<P>The question now is: What kind of an interface can I use on real
+servers?
+<P>As I already noted, eth0:0 alias can not be used, because such
+aliases respond to ARP requests. lo:0 aliases can not be used,
+because they make ARP problems too.
+<P>In case of tunneling VS configuration, the answer is trivial:
+tunl0. But to be honest, tunl0 interface can also be used for
+direct routing.
+<P>(from Joe, the dummy device is OK too)
+<P>With direct routing, the only thing we need an interface for is
+to let kernel know we posses an additional IP address. This
+means, we can set up any kind of an interface, as long as it
+doesn't respond ARP requests. Instead of tunl0, you could also
+set up a ppp0, slip0, eth1 or whatever. I suggest setting up a
+tunl0:
+<P>
+<P>ifconfig tunl0 192.168.1.2 -arp up
+<P>Problem 3: Real server ARP requests.
+<P>Suppose we have set up a virtual server as described at the
+beginning. All computers are running, but no requests have been
+made.
+<P>Then the client sends a request to the VIP.
+<P>When the packet arrives to gateway, the gateway makes an ARP
+query for the VIP and the director responds. Gateway remembers
+the director's MAC address and sends the packet to the director.
+Director receives the packet, looks up its ipvsadm/LVS tables and
+chooses the real server and forwards the packet to the real
+server by direct routing or tunneling method.
+<P>Real server receives the packet and generates a response packet
+with destination=client, source=VIP.
+<P>(until now everything works correctly)
+<P>When real server wants to send the response packet to the
+gateway, it finds out, that it does not know the gateway's MAC
+address.
+<P>It sends an ARP request to the local network and asks for the
+gateway MAC address. This should look like:
+<P>ARP, who has 192.168.1.1 (gw), tell 192.168.1.11 (real-server IP)
+<P>But in reality, real server asks something like:
+<P>ARP, who has 192.168.1.1 (gw), tell 192.168.1.110 (VIP),
+<P>because it takes the source address from the packet it wants to
+send.
+<P>Here the problems come in.
+<P>Gateway receives the packet and responds to it, which is correct.
+But at the same time, gatweay does a little optimization. It
+finds out, that the real-server's MAC address is not listed in its
+ARP tables and adds the entry into the table, just in case it
+might need that address in the near future.
+<P>The ARP request contained the VIP address and the real-server's
+MAC address, so from now on, the gateway will send all packets
+destined for the VIP to the real server instead (due to MAC
+address). This means all packets that follow will avoid the
+virtual server as whole and get responded by the real-server.
+<P>
+<P>If the real server's ARP request would be:
+<P>ARP, who has 192.168.1.1 (gw), tell 192.168.1.11 (real-server IP)
+<P>all this would not have happened. Therefore I have patched the
+2.2 VS kernel in such a way, that it composes ARP requests based
+on the address of the interface selected by the routing tables
+instead of the address taken from the packet itself.
+<P>In order for virtual server to work correctly, the real servers
+should have patched kernels as well, or at least copy the patched
+/usr/src/linux/net/ipv4/arp.c file to the real servers before
+compiling the kernels.
+<P>Conclusion
+<P>Those were my experience with ARP problems, and the 2.2 kernel
+virtual server.
+<P>I think it would be wise to add this letter to the web site and
+notify the network developers about our findings at some point in
+time.
+<P>Here are some golden rules I stick to, when I do virtual server
+configuration:
+<P>
+<PRE>
+Rule 1:
+        Do not use lo:0 alias on the director.
+        Use eth0:0 alias instead.
+
+Rule 2:
+        Avoid using lo:0 alias, not even on real-servers.
+        Use tunl0 or some other simulated interface
+        on real servers instead. (Joe: use dummy0)
+
+
+Rule 3:
+        Apply the VS patch to kernels on real servers.
+</PRE>
+<P>
+<H2><A NAME="ss3.5">3.5 random mailings on the arp problem</A>
+</H2>
+
+<P>
+<P>(from Stephen Williams <CODE>sdw@lig.net</CODE>, Stephen wrote one of
+the patches that stop devices in 2.2.x kernels from replying
+to arp requests)
+<P>symptoms of real-servers arp'ing:
+<P>If you don't use the patch you'll find that the 'active' box will
+bounce from machine to machine as each one sends an ARP reply
+that is heard last. Additionally you will get TCP Reset's as
+connections that were on one box suddenly start going to others.
+Very nasty and unusable.
+<P>(Lars)
+I have thought about how the ARP problem can occur at all with
+direct routing, because I never noticed it. Then it occured to me
+that your virtual IP comes from the same subnet as the real IP of
+the LVS and also all the real servers share this media.
+<P>To avoid the "ARP problem" in this case without adding a kernel
+patch or anything else, you can just add a direct route for the
+VIP using the real IP of the LVS as a gateway address on the
+router in front of the LVS. ("ip route VIP 255.255.255.255
+real_ip" on a Cisco, or "route add -host VIP gw RIP" on Linux)
+<P>Since I just used 2 ethernet cards and had the LVS act as
+gateway/firewall anyway, I never noticed the ARP problem. (We
+have 2 LVS in a standby configuration to eliminate the SPOF)
+<P>and a reply from Wensong (just to show this subject isn't
+obvious)
+<P>For the clients who reach the virtual server through the router,
+there is no problem if a static route for VIP is added.
+<P>However, fot the clients who are in the network of virtual
+server, the "ARP problem" will arise. There is fight in ARP
+response, and the clients don't know send the packets to the load
+balancer or the real server.
+<P>In my point of view, the VIP address is shared by the load
+balancer and real servers in VS-Tun or VS-DR, only the load
+balancer does ARP response for VIP to accept request packets, and
+the real servers has the VIP but don't, so that they can process
+packets destined for VIP.
+<P>
+<P>
+<H2><A NAME="ss3.6">3.6 Is the arp behaviour of 2.2.x kernel a bug?</A>
+</H2>
+
+<P>
+<P>(Julian Anastasov replying to correct an
+error in a previous version of the HOWTO
+where I state that the dummy0 device in
+2.2.x kernels does not arp. Julian wrote
+one of the real-server patches which
+fix the "arp problem").
+<P>
+<PRE>
+>         In fact, the documentation is incorrect. There is no difference,
+> all devices are reported in the ARP replies: lo, tunl and dummy. So, only
+> the ARP patch can solve the problem. This can be tested using this
+> configuration with any device (before the patch applied):
+>
+> Host A:
+>         eth:x 192.168.0.1
+>
+> Host B:
+>         eth:x 192.168.0.2
+>         lo, dummy, tunl: 192.168.0.3
+>
+>
+> On host A try: ping 192.168.0.3
+>
+>         Host B replies for 192.168.0.3 through 192.168.0.2 device
+>
+>         So, the ARP problem means: "All local interfaces are reported"
+> until the ARP patch is used. In fact, all ARP patches which use IFF_NOARP
+> to hide the interface are incorrect. I don't expect them in the kernel.
+</PRE>
+<P>(Stephen WIlliams, who wrote another of the patches to
+fix the arp problem).
+<P>
+<PRE>
+>>  Of course the ARP code in the kernel needs to be fixed so my filter code isn't
+>>  needed.  Still, I'm confused by this statement.  The IFF_NOARP flag determines
+>>  whether a device arp replies or not.  What's wrong with honoring that?
+>>
+>>  If you mean that arp replies should never be sent on another interface, that is
+>>  what I currently believe to be correct.
+
+> (Julian)
+>         My understanding is that 2.2.x ARP code is not buggy and
+> there is no need to be "fixed". I must say that your patch is
+> working for the LVS folks but not for all linux users.
+>
+>         IFF_NOARP means "Don't talk ARP on this device",
+> from the 'man ifconfig':
+>
+> [-]arp  Enable or disable the use of the ARP protocol on
+> this interface.
+>
+>         So, where is the bug ? The ARP code never talks through
+> lo, dummy and tunl devices when they are set NOARP. It uses
+> eth (ARP) device.
+>
+>         If You hide all NOARP interfaces from the ARP protocol
+> this is a bug. One example:
+>
+> +--------+ppp0                          +------+
+> | Host A |------------ppp link----------|ROUTER|------ The World
+> +--------+A.B.C.1 (www.domain.com)      +------+
+>   |eth0
+>   |A.B.C.2
+>   |
+>   |A.B.C.3
+> +--------+
+> | Host B |
+> +--------+
+>
+> Is it possible after your patch Host B to access www.domain.com ?
+> How ? Host A doesn't send replies for A.B.C.1 through eth0 after
+> your patch. OK, may be this is not fatal. Tell it to all kernel
+> users. You hide all their NOARP interfaces. May be there are other
+> examples where this is a problem too. Or may be there is something
+> wrong in this configuration?
+>
+>         I want to say that this patch hurts all users if present
+> in the kernel. On Nov 6 I posted one patch proposal to the
+> linux-kernel list which adds the ability to hide interfaces
+> from the ARP queries and replies. But the difference is that
+> only specified interfaces are not replied, not all NOARP
+> interfaces. Its arp_invisible sysctl can be used by LVS
+> folks to hide lo, tunl or dummy interfaces but this feature
+> doesn't hurt all kernel users. I think, this patch is more
+> acceptable and can be included in the 2.2 kernel, may be after
+> some tunning. And I'm still expecting comments from the net
+> folks and from all LVS users.
+</PRE>
+<P>--
+<H2><A NAME="ss3.7">3.7 How to tell if an interface is replying to arp requests</A>
+</H2>
+
+<P>
+<P>on the machine with that IP (usually the VIP)
+<P>$ ping VIP
+<P>look in /proc/net/arp for MAC address
+<P>on a machine on a network (eg 192.168.1.0/24) to see which
+addresses are replying to arp requests
+<P>$ ping 192.168.1.255
+<P>then before the arp tables expire (15secs - 2mins depending
+on the OS)
+<P>$ arp -a
+<P>
+<H2><A NAME="ss3.8">3.8 Arp caching defeats Heartbeat switchover</A>
+</H2>
+
+<P>
+<P>From: Claudio Di-Martino <CODE>claudio@claudio.csita.unige.it</CODE>
+<P>I've set up a VS using direct routing composed of two linux-2.2.9
+boxes with the 0.4 patch applied. The load balancer acts as a
+local node too. I configured mon to monitor the state of the
+services and update the redirect table accordingly. I also
+configured heartbeat so that when the load balancer fails the
+second machine takes over the virtual ip, sets up the redirect
+table and starts mon. When the load balancer restarts, the backup
+reconfigures itself as a real server, drops the interface alias
+that carries the virtual ip, stops mon, clears the redirect
+table.  Although the configuration of the two machines is set up
+correctly it fails to restore the load balancer due to arp
+caching problems.
+<P>It seems that the local gateway keeps routing requests for the
+virtual ip to the load balancer backup. Sending gratuitous arp
+packets from the load balancer doesn't have effect since the
+interface of the backup is still alive and responding.
+<P>Has anyone encountered a similar problem and is there a hack or a
+proper solution to take back control of the virtual ip?
+<P>From: "Antony Lee" <CODE>AntonyL@hwl.com.hk</CODE>
+<P>I am new to LVS and I have a problem in setting up two LVSes
+for failover issue. The problem is related to the ARP caching
+of the primary LVS' MAC address in the real servers and the
+router connected to the Internet. The problem leads all the
+Internet connections stalled until all ARP caching in Web
+Servers and router to be expired. Can anyone help to solve
+the problem by making some changes in the Linux LVS ?
+( It is because I am not able to change the router ARP cache
+time. The router is not owned by the Web hosting company not by me.)
+<P>In each LVS, there are two network card installed. The eth0 is connected to
+a router which is connected to the Internet. The eth1 is connected to a
+private network which is the same segment as the two NT IIS4.
+<P>
+<PRE>
+The eth0 of the primary LVS is assigned an IP address 202.53.128.56
+The eth0 of the backup LVS is assigned an IP address 202.53.128.57
+The eth1 of the primary LVS is assigned an IP address 192.128.1.9
+The eth1 of the primary LVS is assigned an IP address 192.128.1.10
+
+In addition, both primary and backup LVS have enabled the IPV4 FORWARD and
+IPV4 DEFRAG. In the file /etc/rc.d/rc.local the following command was also
+added:
+ipchains -A -j MASQ 192.168.1.0/24 -d 0.0.0.0/0
+</PRE>
+<P>I use the piranha to configure the LVS so that the two LVS have a common
+IP address 202.53.128.58 in the eth0 as eth0:1. And have a IP address
+192.128.1.1 in the eth1 as eth1:1
+<P>The pulse daemon is also automatically be run when the two LVSes were
+booted.
+<P>In my configuration, the Internet clients can still access to our
+Web server with one of the NT was disconnected from the LVS. The backup
+LVS --CAN AUTOMATICALLY-- take up the role of the primary LVS when
+the primary LVS is shut down or disconnected from the backup LVS.
+However, I found that all the NT Web Servers cannot reach the backup
+LVS through the common IP address 192.128.1.1, and all the Internet clients
+stalled to connect to our web servers.
+<P>Later, I found that the problem may due to the ARP caching in the Web
+Servers and router. I tried to limit the ARP cache time to 5 seconds
+in the NT servers and half of the problem has solved ,i.e. the NT
+Web servers can reach the backup LVS through the common IP
+address 192.128.1.1 when the primary LVS was down. However, it
+is still cannot be connected through the Internet clients
+when the LVS failover occur.
+<P>(Wensong)
+I just tried two LVS boxes with piranha 0.3.15. When the primary LVS stops
+or fails, the backup will take over and send out 5 Gratuitous Arp
+packets for the VIP and the NAT router IP respectively, which should clean
+the ARP caching in both the web servers and the external router.
+<P>After the LVS failover occurs, the established connections from the
+clients will be lost in the current version, and the clients need to
+re-connection the LVS.
+<P>
+<PRE>
+.. 5 ARP packets for each IP address, and 10 for both the VIP and
+the NAT router IP. I saw the log file as follows:
+
+Mar  3 11:12:14 PDL-Linux2 pulse[4910]: running command "/sbin/ifconfig" "eth0:5" "192.168.10.1" "up"
+Mar  3 11:12:14 PDL-Linux2 pulse[4908]: running command "/usr/sbin/send_arp" "-i" "eth0" "192.168.10.1" "00105A839CBE" "172.26.20.255" "ffffffffffff"
+Mar  3 11:12:14 PDL-Linux2 pulse[4913]: running command  "/sbin/ifconfig" "eth0:1" "172.26.20.118" "up"
+Mar  3 11:12:14 PDL-Linux2 kernel: send_arp uses obsolete (PF_INET,SOCK_PACKET)
+Mar  3 11:12:14 PDL-Linux2 pulse[4909]: running command "/usr/sbin/send_arp" "-i" "eth0" "172.26.20.118" "00105A839CBE" "172.26.20.255" "ffffffffffff"
+Mar  3 11:12:17 PDL-Linux2 nanny[4911]: making 192.168.10.2:80 available
+</PRE>
+<P>I don't know if the target addresses of the 2 send_arp commands are set
+correctly. I am not sure if it is different when broadcast or source IP is
+used as target address, or any target address is OK.
+<P>(Horms)
+Are there just 5 ARPs or 5 to start this and then more gratuitous
+ARPs at regular intervals. If the gratuitous ARPs only occur at
+fail-over then once the ARP caches on hosts expire there is
+a chance that a failed host - whose kernel is still functional -
+could reply to an ARP request.
+<P>From: <CODE>wanger@redhat.com</CODE>
+When we put this together, I talked to Alan Cox about this.  His
+opinion was that send 5 ARPs out at 2 seconds apart.  If there is
+something out there listening and cares, then it will pick it up.
+<P>THe way piranha works, as long as the kernel is alive, the backup (or
+failed node) will not maintain any interfaces that are Piranha managed.
+In other words, it removes any of those IPs/interfaces from its routing
+table upon failure recovery.
+<P>
+<H2><A NAME="arp"></A> <A NAME="ss3.9">3.9 More on the arp problem</A>
+</H2>
+
+<P>
+<P>ARP requests/replies are thought of as coming from a device
+and people make statements like
+<P>"the dummy device in 2.0.x kernels does not reply to arp
+requests while the same device in 2.2.x kernels does reply".
+<P>It is the kernel that handles arp requests according to a
+set of rules and not the device. The code for the dummy
+device is the same in 2.0.x and 2.2.x kernels and is
+not responsible for the change in arp behaviour.
+<P>The RPC for ARP is at ftp://ftp.isi.edu/in-notes/std/std37.txt.
+(also see rfc826 and rfc1122). The model system used there is 2
+machines on a single ethernet. It doesn't shed any light on the
+implementation of ARP on multi-interface systems like LVS.
+<P>
+<P>
+<H2><A NAME="ss3.10">3.10 Properties of devices for the VIP</A>
+</H2>
+
+<P>
+<P>In a previous version of the HOWTO I stated that the dummy0
+device did not arp in 2.2.x kernels and therefore could be
+used as the device for the VIP on an unpatched 2.2.13 real-server.
+Julian Anastasov replied that they did arp (see below
+for his posting and the ensuing discussions).
+<P>I hadn't actually tested whether the dummy0 device arp'ed
+but had concluded that it wasn't arp'ing because I had a
+working LVS using the dummy0 interface for the VIP on
+unpatched 2.2.x real-servers and because as everyone
+knows ;-) an LVS needs to have a non-arp'ing device on
+the VIP of the real-servers.
+<P>I had a VS-DR LVS which worked with dummy0, lo:0 and tunl0
+as the VIP device and which on further testing, I found
+also worked with eth0:1 or eth1 as the VIP device on
+2.2.13 real-servers. Whatever the arp'ing status of dummy0,
+lo:0 or tunl0, clearly eth1 replies to arp requests,
+so despite the conventional wisdom, it is possible 
+to build an LVS with arp'ing VIP's on the real-servers.
+<P>On investigating why this LVS worked, I found that the
+MAC address for the VIP in the client's arp cache (# arp -a)
+was always the director. I assume this was
+because the director is 3-4x the speed of the other
+machines in the LVS and it replies to arp requests first
+for the VIP (another posting from Stephen WIlliams
+says that the address which replies last is stored in the
+arp cache - we'll figure out what's really going on here
+eventually). On another LVS where the real-servers were all
+identical hardware with 2.2.13 unpatched kernels, one
+particular real-server always was the machine in the client's
+arp cache for the VIP (to check, delete entry for VIP
+with arp -d, then ping again, then look in arp cache).
+<P>I found that I could get a working LVS using almost
+anything to hold the VIP on the real-servers, including eth0:1
+and eth1 (another NIC in the real-server). These devices carrying
+the VIP were pingable from the client and I could get the
+corresponding MAC addresses in the arp table of the client
+if the director was not setup with a VIP. When I setup a
+working LVS this way, I found each time that the MAC
+address for the VIP in the client's arp cache was the
+director's MAC address. For some reason, that I don't know,
+whenever the client does an arp request for the VIP, it gets
+the director's MAC address.
+<P>Possible reasons for the MAC address of the director always
+being associated with the VIP in my LVS -
+<P>1. I configure the director first (I can't imagine the client
+asking for the MAC address of the VIP until it makes a request
+- this doesn't happen till after I've configured the
+real-servers).
+<P>2. The director is 3 times faster (CPU speed) than the next
+machine in the LVS and it always replies to arp request first.
+<P>3. I was lucky.
+<P>Since you can make a working VS-DR LVS with the real-server VIP
+on an arp'ing eth0:1 device I decided that the relevent piece
+of information about arp'ing was
+<P>- an LVS will work if the client always gets the MAC address
+of the director when it asks for the MAC address of the VIP
+<P>This is easy - you tell the client (or the router) the
+MAC address of the VIP with arp -s or arp -f .
+<P>here's my /etc/ethers
+<P>lvs.mack.net 00:A0:CC:55:7D:47
+<P>After installing the MAC address of the DIP (director) as
+the MAC address of the VIP (lvs) in the arp table
+($arp -f /etc/ethers) I get
+<P>
+<P>
+<PRE>
+client:/usr/src/temp/lvs# arp -a
+real-server1.mack.net (192.168.1.1) at 00:90:27:66:CE:EB [ether] on eth0
+lvs.mack.net (192.168.1.110) at 00:A0:CC:55:7D:47 [ether] PERM on eth0
+director.mack.net (192.168.1.10) at 00:A0:CC:55:7D:47 [ether] on eth0
+</PRE>
+<P>notice the "PERM" in the VIP entry on the client.
+<P>removing the permanent entry
+<BLOCKQUOTE><CODE>
+<PRE>
+client:/usr/src/temp/lvs# arp -d lvs.mack.net
+client:/usr/src/temp/lvs# arp -a
+real-server1.mack.net (192.168.1.1) at 00:90:27:66:CE:EB [ether] on eth0
+lvs.mack.net (192.168.1.110) at &lt;incomplete> on eth0
+director.mack.net (192.168.1.10) at 00:A0:CC:55:7D:47 [ether] on eth0
+</PRE>
+</CODE></BLOCKQUOTE>
+<P>If I edited /etc/ethers changing the MAC address of lvs to
+anything else, the LVS did not work anymore. So the arp
+information is coming from /etc/ethers rather than some
+uncontrolled variable I'm not aware of.
+<P>I had thought that in an LVS with the VIP on real-servers
+on an arping device that the VIP would hop from one machine
+to another (see the postings in the MISC section). Since
+naturally occuring LVS's with arping VIP's on real-servers
+existed and worked well (mine), I set up an LVS
+by making a permanent entry for the VIP of the director
+in the arp cache of the client (router). This can be done by
+<P>
+<PRE>
+$ arp -f /etc/ethers
+or
+$ arp -s 192.168.1.110 MAC_ADDRESS
+</PRE>
+<P>There are 2 results of this
+<P>1. the real-servers can have the VIP on an
+an arp'ing device (eg eth0:1, eth1) 
+- you don't need lo or dummy0, tunl0
+for real-servers with 2.0.36 and 2.2.x kernels.
+<P>2. If two (or more) directors are setup in failover mode, the
+mechanism by for changing the VIP from one to another is
+broken by making a permanent entry for VIP on the director
+in the arp cache of the router. This is not a problem for a test
+setup to demonstrate an LVS but may be a problem in a high
+availability environment (a solution may be found n the meantime
+too).
+<P>The normal method for changing drectors (eg with heartbeat) includes
+a gratuitous arp. To force a gratuitous arp
+<P>(Julian)
+You can use Yuri Volobuev's send_arp.c from the 'fake' package or
+Alexey Kuznetsov's arping from its iputils package:
+<P>
+<PRE>
+ fake - http://vergenet.net/linux/fake/
+ iputils - ftp://ftp.inr.ac.ru/ip-routing/iputils-ss991024.tar.gz
+ (iputils is also used for IPAT, IP address takeover))
+</PRE>
+<P>Here's some tests I did
+<P>
+<PRE>
+LVS equipment: 2.2.13 client, and 0.9.4/2.2.13 director.
+2 real-servers
+a) 2.0.36 kernel, libc5, gcc-2.7.2.3, net-tools 1.42.
+b) 2.2.13 kernel, glibc, gcc-2.95,    net-tools 1.52
+</PRE>
+<P>Experiment 1: Result - arp'ing is independant of [-]arp
+<P>Summary: the -arp/+arp option for ifconfig had no effect
+on any devices back to 2.0.36 kernels with net-tools 1.42.
+If it normally arps then -arp had no effect, if it normally
+doesn't arp, than "arp" doesn't turn it on (data below).
+<P>
+<P>Method:
+IP=192.168.1.1/24 with VIP=192.168.1.110/32. The VIP was on
+dummy0. The test was to see if the VIP was pingable from
+another (external) machine on the 192.168.1.0/24 network
+or pingable from the machine itself (ie internally from
+the console). (I assume I had a route add -host for the
+VIP although I didn't record this). The test was done with
+ifconfig using arp or -arp (the output of ifconfig -a
+didn't change)
+<P>
+<PRE>
+                 -----2.0.36------- -----2.2.13------
+ping from        internal  external internal external
+VIP device
+dummy   ARP        +         -        +        +
+        NOARP      +         -        +        +
+        down       -         -        -        - (control)
+</PRE>
+<P>Experiment2: Can the VIP be on a separate NIC?
+<P>Summary: yes, as long as the NIC doesn't have a cable
+plugged into it.
+<P>
+<P>Method:
+same as above except VIP on eth1 (another NIC).
+<P>
+<PRE>
+                 -----2.0.36-------
+ping from        internal  external
+VIP device
+eth1 has cable connected to 192.168.1.0 network
+eth1    ARP        +         +
+        NOARP      +         +
+
+eth1 cable to network removed
+eth1    ARP        +         -
+        NOARP      +         -
+        works as real-server in LVS - yes
+</PRE>
+<P>One of the reasons an no-arp interface is used on the
+real-server is that it is not visible to the rest of the
+network. Does the LVS work if the eth1 VIP on the real-server
+is not visible to the rest of the network?
+<P>Conclusion: for 2.0.36 dummy0 doesn't arp, and eth1 does arp.
+the arp/-arp option to ifconfig has no effect on arp behaviour.
+LVS works with both dummy0 and eth1, I assume since VIP need
+only be resolved as local on the real-server and does not
+need to be visible to the network.
+<P>Experiment 3: What devices and netmasks are neccessary for
+a working LVS?
+<P>Using the /etc/ethers approach for setting the MAC address of the
+VIP I then set up an LVS with pair of real-servers serving telnet.
+All IPs are 192.168.1.x, all machines have a route to 192.168.1.0
+via eth0. There is no default route.
+<P>
+<PRE>
+1. 2.0.36, libc5, gcc 2.7.2.3, net-tools 1.42
+2. 2.2.13, glibc-2.1.2, gcc-2.95, net-tools 1.52
+</PRE>
+<P>with the following devices holding the VIP, tunl0, eth0:1, lo:0, dummy0,
+eth1. In each case there was no route entry for the VIP device and
+there was no cable connected to eth1 when it was used for the VIP. 
+The table below shows whether the LVS worked. The VIP is installed with
+<P>ifconfig $DEVICE 192.168.1.110 netmask $NETMASK broadcast $BROADCAST
+<P>
+<PRE>
+with $NETMASK="255.255.255.255" $BROADCAST="192.168.1.110"
+or   $NETMASK="255.255.255.0"   $BROADCAST="192.168.1.255"
+</PRE>
+<P>the result belong to 1 of 3 groups
+<P>
+<PRE>
++ works fine
+- doesn't work (at $ prompt on client get
+  "unable to connect to remote host.  Protocol not available"
+  then client returns to regular unix $ prompt)
+hang - client hangs, real-server cannot access network anymore,
+  have to run rc.inet1 from console prompt on real-server to
+  start network again.
+</PRE>
+<P>
+<P>netmask of VIP=255.255.255.255 (normal LVS setup)
+<P>
+<PRE>
+LVS type  -----VS-Tun------     ----VS-DR------
+kernel    2.0.36     2.2.13     2.0.36   2.2.13
+
+VIP on
+tunl0      +           +         +         +
+eth0:1     +           -         +         +
+lo:0       +           -         +         +
+dummy0     +           -         +         +
+eth1       +           -         +         +
+</PRE>
+<P>netmask of VIP=255.255.255.0 (not normally used for LVS)
+<P>
+<PRE>
+VIP on
+tunl0      +           +         +         +
+eth0:1     +           -         +         +
+lo:0       +           hangs     +         hangs
+dummy0     +           -         +         +
+eth1       +           -         +         +
+</PRE>
+<P>It would seem that any device and any netmask can be used
+for the VIP on a 2.0.36 real-server for both VS-Tun and VS-DR.
+<P>For 2.2.13 real-server,
+VS-Tun, VIP on a tunl0 device only, any netmask
+(ie you need tunl0 on VS-Tun with 2.2.x kernels)
+<P>
+<P>
+<PRE>
+VS-DR,  lo:0 device netmask /32 only
+       all other devices any netmask
+</PRE>
+<P>For VS-DR then on solaris/DEC/HP/NT...
+LVS can probably use a regular eth0 device rather than
+an lo:0 device (more work for Ratz to do :-).
+<P>Does anyone know why the lo:0 device has to be /32
+for VS-DR on kernel 2.2.13 while the other devices
+can be /24? 
+<P>Jean-Francois Nadeau <CODE>jna@microflex.ca</CODE> 6 Dec 99
+<P>In kernel 2.2.1x with a virtual interface on lo:0 
+and netmask of 255.255.255.0 that the interface no longer
+arps.
+<P>Does anyone know why only the tunl0 device works for
+VS-Tun on 2.2.x kernels?
+<P>Experiment 4: Effect of route entry for VIP and connection to
+VIP The VIP normally has an entry in the routing table eg
+<P>route add -host 192.168.1.110 $DEVICE
+<P>I found in Experiment 2 that a route entry was not neccessary
+for the LVS to work when the real-server had the VIP on eth0:1.
+Since I had always used a route entry for the VIP I wanted to
+find out when it was needed. The same LVS was used as for
+Experiment 3. The variables were
+<P>
+<PRE>
+1) a route entry/no route entry for VIP/32
+2) for eth1 whether the NIC was connected to the network by a cable.
+
+
+
+kernel            ------2.0.36-------     -------2.2.13-------
+VIP               eth1 eth1_nc eth0:1     eth1  eth1_nc eth0:1
+
+no route
+   LVS             +     +      +          +      +       +
+   ping internal   -     -      -          +      +       +
+   ping external   +     -      +          +      +       +
+
+route
+   LVS             +     +      +          +      +       +
+   ping internal   +     +      +          +      +       +
+   ping external   +     -      +          +      +       +
+</PRE>
+<P>Conclusion 1: LVS works when for both cases of route/no_route
+for the VIP for eth0:1 and eth1 (ie you don't need a route entry
+for the VIP on the real-servers).
+<P>Conclusion 2:  having a network cable/no network cable
+does not affect whether the LVS works.
+<P>Conclusion 3: for 2.0.36 kernels you can choose to have
+the VIP pingable from the outside world but not pingable
+by the local host by having it on eth1 with a cable
+connection (this seems wierd and I can't think
+of any use for it just yet) or the reverse - pingable
+from the localhost but not by the external world
+by not have a cable connection.
+<P>(Note: using a hosts routable IP as the target - the IP on eth0
+say - you can make a host unpingable from the console if you down
+the lo. The host is still pingable from elsewhere on the net.)
+<P>
+<H2><A NAME="topology"></A> <A NAME="ss3.11">3.11 Topologies for VS-DR and VS-Tun LVS's</A>
+</H2>
+
+<P>
+<P>
+<H3>Traditional</H3>
+
+<P>
+<P>The conventional VS-DR/VS-Tun topology which allows maximum
+scalability has each real-server with its own default
+gateway (to a router). (In a routerless test setup, the
+client would be the default gateway for the real-servers.
+In a disk- or compute-bound situation, only one router
+may be needed. The changes in topology/routing are made
+by changing the IP of the default gw for the real-servers)
+<P>Some method of handling the arp problem is needed here.
+<P>The packets sent to the real-servers from the director,
+generate replies which go directly to the client. 
+Failure messages (eg if a real-servers is not available) 
+do not get returned to the director, who cannot
+tell if a real-server has failed 
+(see discussion of 
+<A HREF="LVS-HOWTO-19.html#agent">monitoring agents</A>).
+<P>
+<PRE>
+
+                       -------------clients-----------------------
+                       |                         |       |       |
+                    (router)                  (router)(router)(router)
+                       |                         |       |       |
+          _________    |                         |       |       |
+        |          |   |    VIP                  |       |       |
+        | director |---     DIP                  |       |       |
+        |__________|   |                         |       |       |
+                       |                         |       |       |
+                       |                         |       |       |
+        ---------------------------------        |       |       |
+        |              |                |        |       |       |
+        |              |                |        |       |       |
+       RIP1           RIP2             RIP3      |       |       |
+       VIP            VIP              VIP       |       |       |
+ _____________   _____________   _____________   |       |       |
+|             | |             | |             |  |       |       |
+| real-server | | real-server | | real-server |  |       |       |
+|_____________| |_____________| |_____________|  |       |       |
+        |              |                |        |       |       |
+        |              |                ----------       |       |
+        |              -----------------------------------       |
+        ----------------------------------------------------------
+</PRE>
+<P>
+<H3>Director sees replies</H3>
+
+<P> 
+<P>(from Julian Anastasov)
+<P>This discussion led to Julian's 
+<A HREF="LVS-HOWTO-12.html#martian">martian modification</A>.
+<P>If the default gw for each real-server is changed to the DIP
+(see the Martian modification section) then
+<P>1. The director has to handle the reply packets as well
+as in the incoming packets, doubling the network load.
+<P>2. The director sees all the reply packets. Connection failure
+can be detected (in principle).
+<P>
+<PRE>
+
+                        clients
+                           |
+                         router
+                           |
+             __________    |
+            |          |   |    VIP
+            | director |---     DIP
+            |__________|   |
+                           |
+                           |
+          ------------------------------------
+          |                |                 |
+          |                |                 |
+         RIP1             RIP2              RIP3
+         VIP              VIP               VIP
+   _____________     _____________     _____________
+  |             |   |             |   |             |
+  | real-server |   | real-server |   | real-server |
+  |_____________|   |_____________|   |_____________|
+</PRE>
+<P>
+<PRE>
+>From: Horms &lt;tt/horms@vergenet.net/
+>
+>Hi, I have been setting up a test network to benchmark IPVS,
+>the topology is as follows.
+>
+>       node-1      node-6     node-7
+>       (client)   (client)   (client)
+>           |         |          |        client-net
+>  ---------+---------+----------+------ 192.168.2.0/24
+>                     |
+>                   node-3 (router)
+>                     |                   server-net
+>      ------+--------+----------+---     192.168.1.0/24
+>            |        |          |
+>         node-2    node-4     node-5
+>         (IPVS)   (server)   (server)
+>
+>
+>The question that I have is that the network I would really like
+>to be testing is;
+>
+>      node-1       node-6     node-7
+>       (client)   (client)   (client)
+>           |         |          |        client-net
+>  ---------+---------+----------+------ 192.168.2.0/24
+>                     |
+>                   node-2 (IPVS)
+>                     |                   server-net
+>      ---------+-----+----+---------     192.168.1.0/24
+>               |          |
+>             node-4     node-5
+>            (server)   (server)
+>
+</PRE>
+
+..
+> other than using NAT, which has
+> performance problems, is this possible? I tried this topology
+> with direct routing and packets from the clients were multiplexed
+> to the servers fine, but return packets from the servers to the
+> client were not routed by the IPVS box.
+<P>(Lars)
+Yes. The LVS box silently drops the return packets, since they have a src ip
+which is also bound as a local interface on the LVS. This is meant to be a
+simple anti-spoofing protection.
+<P>(Note from Joe - the return packet from the real-server has src=VIP,
+dest=CIP. If this packet is routed via the director, which also has
+the VIP, the director will be receiving a packet from another machine
+with the the src being an one of its own IPs and the director will
+drop the packet).
+<P>You can enable logging these packets via
+<P>echo 1 >/proc/sys/net/ipv4/conf/all/log_martians
+<P>The only way around this with current Linux kernels is to disable the check in
+the kernel source or to use a separate box as the outward gateway. (Which is
+how DR is meant to be used for full performance)
+<P>
+<PRE>
+> This is not a problem as such as it probably makes a lot of sense
+> on not to use an IPVS box as your gateway router,
+</PRE>
+<P>Actually it makes a lot of sense to do just that IMHO. Less points of failure,
+less hard- &amp; software to duplicate in a failover configuration.
+<P>
+<P>from: Lars Marowsky-Bree <CODE>lmb@teuto.net</CODE>
+To: Ray Bellis <CODE>rpb@community.net.uk</CODE>
+<PRE>
+> It needs to be made more explicit in the documentation that LVS-DR will
+> *only* work if you have a different return path.
+
+... or if you have a suitably patched kernel.
+
+> We spent several man days trying to get this to work before figuring out why
+> the packets were being dropped, at which point we had no alternative but to
+> use LVS-NAT instead.
+</PRE>
+<P>I agree. We still assume too much knowledge on the network admin side.
+<P>
+<PRE>
+> FYI, we have our LVS system working now, with LVS redundancy achieved by
+> running OSPF routing (gated) on the LVS-NAT servers and having the VIP
+> within the same IP subnet as the RIPs so that IGP routing policies
+> automatically determine which LVS router the packets arrive on.
+</PRE>
+<P>Yes, thats one option. Even better than heartbeat and IPAT, if all your
+systems support running a routing protocol.
+<P>(IPAT = IP address takeover, part of heartbeat)
+<P>(In essence, heartbeat &amp; IPAT is nothing but reinventing a subset of the
+functionality of a hardened routing protocol like OSPF/RIPv2/EIGRP)
+<P>
+<H3><A NAME="promote"></A> On other schemes for director/real-servers to exchange roles</H3>
+
+<P>
+<P>
+<P>Julian Anastasov <CODE>uli@linux.tu-varna.acad.bg</CODE> has pointed out
+on the mailing list that the prototype LVS can be redrawn as
+<P>
+<PRE>
+                       |        |
+                       | client |
+                       |________|
+                           |
+                           |
+                        (router)
+                           |
+                           |
+         ------------------------------------
+         |                 |                |
+         |                 |                |
+      DIP, VIP         RIP1, VIP        RIP2, VIP
+    ____________    ______________    ______________
+   |            |  |              |  |              |
+   |  director  |  | real-server1 |  | real-server2 |
+   |____________|  |______________|  |______________|
+</PRE>
+<P>and that any real-server is in a position to replace a failed
+director.  No-one has bothered to write the code for this.
+It seems it's easier do have extra boxes in the director role 
+(ready for failover) and others in real-server role. 
+It's easier to wheel in another box for a spare director 
+than to configure real-servers to do two jobs reliably.
+<P>To: Wensong Zhang <CODE>wensong@iinchina.net</CODE>
+<P>
+<PRE>
+> The director and the backup are in a shared
+> network for incoming traffic, the backup sniff packets and change its
+> connection state the same as the director (because the director is just on
+> half client-to-server connection in LVS/TUN and LVS/DR), then drop
+> packets.
+
+> It needs some investigation and probably lots of additional code too. ;-)
+</PRE>
+<P>I don't even think so - the main trick is getting the kernel to sniff the
+packets, which is probably quite easy with a little messing around. Not
+sending the packets out again (which would confuse the real-servers) is easy
+with a ipchains output rule which silently drops them.
+<P>This doesn't work with a switch though, you need a shared network like a
+hub.
+<P>However, I have been talking with rusty about this. The problem is more
+general - HA shared-state firewalls are asked for all the time, so we want to
+do a generic thing for everything which builds upon Netfilter's state machine.
+This would not only cover LVS, but also masquerading and packet filtering in
+general. We intend to discuss this in greater detail at the Ottawa Linux
+Symposium latest.
+<P>
+<PRE>
+> You can see,the connections depend on the initalize status and realsevers
+> realtime status. So another method is that when Director is down, backup-sever
+> setup the ipvs with the connections,but it seems too late. How do you think
+> about this?
+</PRE>
+<P>TCP/IP should be able to cope with a few seconds delay and lost packets. You
+want to heartbeat once per second and take over after 3-4s though - this
+usually means takeover is complete in &lt;10s, which TCP/IP should swallow.
+<P>
+<H3>Geographically distributed LVS</H3>
+
+<P>
+<P>From: Michael Sparks <CODE>zathras@epsilon3.mcc.ac.uk</CODE>
+<P>
+<PRE>
+> I'm curious about the physical architecture of a cluster of servers
+> where "the real-servers have their own route to the client."  (Like in
+> LVS-DR and LVS-Tun) How have people achived this in real life?  Does
+> each real server actually have it's own dedicated router and Internet
+> connection?  Do you set up groups of real servers where each group
+> shares one line?
+</PRE>
+<P>It could do or it can share things. We've got 3 LVS based clusters, based
+around VS-Tun. The reason for this is because one of the clusters is at a
+different location (about 200 miles from where I'm sitting) , and this
+allows us to configure all the real-servers in the same way thus:
+<P>
+<PRE>
+   tunl0:1 - IP of LVS balanced cluster1
+   tunl0:2 - IP of LVS balanced cluster2
+   tunl0:3 - IP of LVS balanced cluster3 (remote)
+</PRE>
+<P>The only machines that ends up getting configured differently then are
+just the directors.
+<P>So whilst machines are nominally in one of the three clusters, if (say)
+the remote cluster is overloaded, it can take advantage of the extra
+machines in the other two clusters, which then reply directly back to the
+client - and vice versa.
+<P>In that situation a client in (say) Edinburgh, could request an object via
+the director at Manchester, and if the machines are overloaded there, have
+the request forwarded to London, which then requests the object via a
+network completely separate from the director's and returns teh object to
+the client.
+<P>That UK Nat cache likely to be introducing another node at another
+location in the country at some point in the near future which will be
+very useful. (The key advantage is that at each location we gain X more
+Mbit/s of bandwidth to utilise making service better for users.)
+<P>
+<P>
+<H2><A NAME="ss3.12">3.12 A discussion about the arp problem</A>
+</H2>
+
+<P>
+<P>(Joe and Julian)
+<P>
+<PRE>
+ >(Julian Anastasov &lt;tt/uli@linux.tu-varna.acad.bg/)
+ >There is no difference between devices in 2.2.x, all devices
+ >are reported in the ARP replies: lo, tunl and dummy.
+ >This can be tested using this configuration with any device:
+ >
+ >Host A:
+ >        eth:x 192.168.0.1
+ >
+ >Host B:
+ >        eth:x 192.168.0.2
+ >        lo, dummy, tunl: 192.168.0.3
+ >
+ >
+ >On host A try: ping 192.168.0.3
+ >
+ >        Host B replies for 192.168.0.3 through 192.168.0.2 device
+ >
+
+ >The ARP problem means: "All local interfaces are reported"
+ >until the ARP patch is used. In fact, all ARP patches which use IFF_NOARP
+ >to hide the interface are incorrect. I don't expect them in the kernel.
+</PRE>
+<P>ARP problem, some rules:
+<P>ARP responses
+<UL>
+<LI> all local IP addresses are replied: lo, eth,
+tunl*, dummy* but with some exceptions (see the next rules)
+</LI>
+<LI> 127.0.0.0/8(LOOPBACK) and 224.0.0.0/4(MULTICAST) are
+not replied
+</LI>
+<LI> there is one exception for the "lo" interface: 
+it is possible the kernel to ignore the ARP request if the
+source IP is from the same net as the net used to
+configure "lo" alias. The specified network is treated
+as local.</LI>
+</UL>
+<P>For example:
+<P>real-server# ifconfig lo:0 192.168.1.1 netmask 255.255.255.0
+broadcast 192.168.1.255 up
+<P>"real" treats all packets with source addr from
+192.168.1.0/24 which come from the other devices (eth0)
+as invalid, i.e. source address validation works in
+this case and the ARP request are not replied. The kernel
+thinks: "The incoming packet arrived with
+saddr=local_IP1 and daddr=local_IP2(VIP), so it is invalid".
+By this way the host from the LAN can't talk to the
+real server if its lo alias is configured with
+netmask != 255.255.255.255
+<P>
+<PRE>
+        ifconfig dummy0 192.168.1.1 netmask 255.255.255.255
+</PRE>
+<P>registers only 192.168.1.1 as local ip but:
+<P>
+<PRE>
+        ifconfig lo:0 192.168.1.1 netmask 255.255.255.0         
+</PRE>
+<P>all 256 IPs are local. All IFF_LOOPBACK devices treat
+all IPs as local according to the used netmask.
+<P>> (I assume IFF_LOOPBACK devices are lo, lo:0..n?)
+<P>Yes, currently only lo is marked as loopback. It is used to mark
+whole subnets as local.
+<P>> lo:0 is not marked as loopback?
+<P>lo:0 is just attached IP address to the same device "lo".
+You can try "ifconfig lo:0 192.168.0.1 netmask 255.255.255.255" and
+display the interfaces using "ifconfig". There is LOOPBACK flag for
+lo:0 which is inherited from the device "lo". In Linux 2.2 all aliases
+inherit the device flags. Only the IFF_UP flag is used to add/delete
+the aliases.
+<P>
+<PRE>
+> Assume VS-DR with VIP, RIPs all on the same /24 network on eth0 devices,
+> real-servers all have lo:0 with VIP/24 and have the standard 2.2.x kernel
+> (no patches to hide interfaces). Router says "who has VIP", the arp
+> request arrives at the real-servers via eth0. Device lo:0 finds arp request
+> which arrived on eth0 from router is on the same subnet as lo:0 and does
+> not reply to the arp request.
+</PRE>
+<P>Before checking if to answer the ARP the routing tables are
+checked, i.e. the source validation of the packet is performed. If
+192.168.0.2 asks "who-has 192.168.1.1 tell 192.168.1.2" the real servers
+assumes that this is invalid packet, i.e. from one local IP to another
+local IP (from me to me => drop).
+<P>
+<PRE>
+> I notice that with the 2.2.x kernel, that lo:0 has to have
+> netmask=255.255.255.255 to work, whereas with the 2.0.x kernels (where
+> lo:0 doesn't reply to arp requests), that lo:0 can have the VIP on a
+> 255.255.255.0 netmask and still work.
+</PRE>
+<P>The rule is to use netmask 255.255.255.255 and to hide lo. The ARP
+works in different way in 2.2. It looks the "local" table to validate the
+source of the ARP request and after that it lookups the same table to
+check if daddr of the ARP request is local ip.
+<P>
+<P>ARP requests:
+<P>- all local addresses can be used by the kernel to
+announce them as the source for the ARP request.
+<P>
+<PRE>
+> is it OK to say
+>
+> the kernel can (does?) use all local addresses as the source
+> of ARP requests
+</PRE>
+<P>It can and does. The real server thinks that it can use any local
+ip address as saddr in the ARP request and the answer will be returned
+back if this ip is uniq in the LAN.
+<P>
+<PRE>
+> (do you mean "the real-server will receive a reply if the s_addr is
+> unique in the LAN"?)
+</PRE>
+<P>The real server will receive answer if it uses RIP as saddr in the
+ARP request because the VIP(HIP) is hidden or when using transparent proxy
+because it is not local (the VIP). Real server must know how to ask (using
+uniq IP) or the trafic for the asked IP (ROUTER) will be blocked.
+<P>But the hidden addresses are not used
+because they are not uniq (2.2.14) and the answer will be returned to the
+Director.
+<P>> (do you mean "the non-hidden VIP on the director"?)
+<P>Yes, when the real server ask "who-has ROUTER tell VIP" the ARP
+reply is received in the Director and the transmission in the real servers
+is stopped. The ROUTER sends everything destined to VIP to the Director.
+This is true for all clients on the LAN too if they are not in this
+cluster (if they don't handle packets for VIP).
+<P>
+<PRE>
+> (I would have thought that the main device on each NIC, eg eth0, eth1
+> would have been used as the source address).
+</PRE>
+<P>No, it is extracted from the outgoing datagram and if saddr is
+local ip it is used. But if this is not local ip, i.e. when using
+transparent proxy or the address is marked as hidden the main device ip
+is used.
+<P>
+<PRE>
+>(how is arping part of transparent proxy?)
+</PRE>
+<P>It is not. When VIP is not local IP address in the real server
+this IP is not used from the ARP code. It is not in the "local" table. But
+TCP, UDP and ICMP use it via transparent proxy support.
+<P>They are extracted from the outgoing packet.
+<P>
+<PRE>
+> what is "They"? the source addresses? When you say "extracted", do you
+> mean "removed from packet" or "looked at/detected"
+</PRE>
+<P>The saddr from the data packet is used to build the ARP request.
+<P>
+<PRE>
+>     We tell the kernel
+>     that these addresses are not uniq by setting
+>     &lt;interface&gt;/hidden=1 (starting with kernel 2.2.14).
+>     By this way the kernel select the devices primary IP 
+>     as the source of the ARP request.
+
+> (the kernel can use any local address as s_addr but the
+> code for hiding IPs from arp requests prevents the
+> kernel from using hidden addresses as
+> s_addr in an arp request?)
+</PRE>
+<P>Yes, the code to hide the addresses is already part of
+the source address autoselection (saddr in the ARP request in
+our case). We never autoselect hidden addresses, i.e. if the
+source address is not specified from the higher level. The code
+to hide interface:
+<P>
+<PRE>
+- ignores ARP replies for hidden local addresses
+- doesn't select hidden local addresses as source of the ARP request
+- doesn't autoselect hidden local addresses for the IP level
+
+>
+> > > We expect it is uniq in the LAN.
+>
+> (do you mean -
+> we expect you've set up your network properly and that
+> you don't have the same RIP on 2 real-servers? :-)
+> )
+</PRE>
+<P>The LVS administrator must ensure that the RIPs are
+uniq, only the VIP is shared.
+<P>>     We expect it is uniq in the LAN.
+<P>We tell the kernel that these addresses are not uniq by setting
+<PRE>
+&lt;interface>
+</PRE>
+/hidden=1 (2.2.14). By this way the kernel
+select the devices primary IP as the source of the ARP
+request. We expect it is uniq in the LAN.
+<P>
+<P>So, the recommendation for using the "lo" interface in the real
+servers is:
+<P>- use netmask 255.255.255.255 when configuring lo alias. By this
+way source validation doesn't drop the incoming packets to
+this IP. LVS users usually define the net route through the eth
+interface, so we can talk to other hosts from this network,
+for example to send the packets to the client through the
+default gateway. It is not needed to configure the alias with
+mask != 255.255.255.255
+<P>So, the interfaces which can be used in the real servers to
+listen for VIP are:
+<P>
+<PRE>
+- lo aliases with netmask 255.255.255.255
+- tunl*
+- dummy*
+</PRE>
+<P>All these devices must be marked as hidden to solve the ARP
+problem when using Linux 2.2.
+<P>In the Director: there is no problem to configure the VIP
+even on lo alias or dummy interface. If the interface is
+not marked as hidden this VIP is visible for all hosts on
+the LAN.
+<P>
+<H2><A NAME="ATM"></A> <A NAME="ss3.13">3.13 ATM/ethernet and router problems</A>
+</H2>
+
+<P>
+<P>LVS has only been tested on ethernet. One person had
+an ATM setup which didn't work with VS-DR as the ATM router
+expects packets from the VIP to have the same MAC address
+(in VS-DR packets coming from the VIP could have the MAC
+address of any of the real-servers).
+Apparently this is not easily fixable in the ATM world.
+It should be possible to use one of Julian's 
+<A HREF="LVS-HOWTO-12.html#martian">martian modifications</A>
+to make VS-DR work on ATM, but the person with the ATM setup
+disappeared off the mailing list without us convincing him
+of the joy in having the first ATM LVS.
+<P>Other people have found similar problems with ethernet -
+<P>From: Kyle Sparger <CODE>ksparger@dialtoneinternet.net</CODE>
+<P>I don't know if someone has gone over this, but here's a consideration
+I've come across when setting up LVS in DR mode:
+<P>When the real servers reply, cisco routers (ours do, at least) will
+pick up on the fact that it's replying from a different MAC address, and
+will start arping soon thereafter.  This is sub-optimal, as it causes a
+constant flood of arp requests on the network.  Our solution has been to
+hardcode the MAC address into the router, but this can cause other issues,
+for example during failover.  That can be worked around, as you can set
+the MAC address on most cards, but that in itself may cause other issues.
+<P>Has anyone else experienced this?  Has anyone else come up with a better
+solution than hardcoding it into the router?
+<P>
+<HR>
+<A HREF="LVS-HOWTO-4.html">Next</A>
+<A HREF="LVS-HOWTO-2.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc3">Contents</A>
+</BODY>
+</HTML>

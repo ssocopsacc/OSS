@@ -1,0 +1,833 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+ <META NAME="GENERATOR" CONTENT="SGML-Tools 1.0.9">
+ <TITLE>LVS-HOWTO: Transparent proxy (TP or Horms' method)</TITLE>
+ <LINK HREF="LVS-HOWTO-16.html" REL=next>
+ <LINK HREF="LVS-HOWTO-14.html" REL=previous>
+ <LINK HREF="LVS-HOWTO.html#toc15" REL=contents>
+</HEAD>
+<BODY>
+<A HREF="LVS-HOWTO-16.html">Next</A>
+<A HREF="LVS-HOWTO-14.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc15">Contents</A>
+<HR>
+<H2><A NAME="TP"></A> <A NAME="s15">15. Transparent proxy (TP or Horms' method)</A></H2>
+
+<P>
+<P>Transparent proxy is a piece of Linux kernel code (2.2.x, 2.4.x) 
+which allows a packet destined for an IP _not_ on the host, to
+be accepted locally, as if the IP was on the host.
+<P>Note: web caches (proxies) can operate in transparent mode,
+when they cache all IP's on the internet. 
+In this mode, requests are received and transmitted without 
+changing the port numbers (ie port 80 in and port 80 out).
+In a normal web cache, the clients are asked to reconfigure
+their browsers to use the proxy, some_IP:3128. 
+It is difficult to get clients to do this, and the
+solution is transparent caching. 
+This is more difficult to setup, but all clients will
+then use the cache.
+<P>In the web caching world, transparent caching is often 
+called &quot;transparent proxy&quot; because it is 
+implemented with transparent proxy. 
+In the future, it is conceivable that transparent web caching will be implemented
+by another feature of the tcpip layer and it would be nice 
+if functionality of transparent web caching had a name
+separate from the command that is used to implement it. 
+<P>
+<H2><A NAME="ss15.1">15.1 General</A>
+</H2>
+
+<P>
+<P>This is Horms' (<CODE>horms@vergenet.net</CODE>) method (now called the
+transparent proxy or TP method). 
+It uses the transparent proxy feature of ipchains to accept packets with dst=VIP 
+by the host (director or real-servers) when it doesn't 
+have the IP (eg the VIP) on a device. 
+It can be used on the real-servers 
+(where it handles the 
+<A HREF="LVS-HOWTO-3.html#arp_problem">arp problem</A>) 
+or the director to accept packets for the VIP. 
+When used on the director, TP
+allows the director to be the default gw for VS-DR 
+(see 
+<A HREF="LVS-HOWTO-12.html#martian">Julian's martian modification</A>).
+<P>Unfortunately the 2.2 and 2.4 versions of transparent proxy 
+are as different as chalk and cheese in an LVS. 
+Presumably the functionality has been maintained for
+for transparent web caching but the effect on LVS has not
+been considered.
+<P>You can use transparent proxy for
+<UL>
+<LI>2.2.x, director and real-servers</LI>
+<LI>2.4.x, real-servers only</LI>
+</UL>
+<P>(Historical note from Horms:)
+From memory I was getting a cluster ready for a demo at Inetnet World, New
+York which was held in October 1999. The cluster was to demo all sorts of
+services that Linux could run that were relevant to ISPs. Apache, Sendmail,
+Squid, Bind and Radius I believe. As part of this I was playing with LVS-DR
+and spotted that the real servers coulnd't accept traffic for the VIP. I
+had used Transparent Proxying in the past so I tried it and it worked.
+That cluster was pretty cool, it took me a week to put it together
+and it was an ISP in an albeit very large box.
+<P>Transparent proxy is only implemented in Linux.
+<P>
+<UL>
+<LI> 2.2.x you need IP masquerading, transparent proxing and IP firewalls turned on.</LI>
+<LI> 2.4.x, TP is a standard part of the kernel build, there is no separate TP option.
+In the netfilter options, there are the options under &quot;Full NAT (NEW)&quot; MASQUERADE,
+REDIRECT. I suspect you need all these.</LI>
+</UL>
+<P>
+<H2><A NAME="ss15.2">15.2 How you use TP</A>
+</H2>
+
+<P>
+<P>This is a demonstration of TP using 2 machines: a server (which will accept packets by TP)
+and a client.
+<P>On the server: ipv4 forwarding must be on.
+<P>
+<PRE>
+echo "1" > /proc/sys/net/ipv4/ip_forward
+</PRE>
+<P>You want your server to accept telnet requests on an IP that is 
+not on the network (say 192.168.1.111). 
+Here's the result of commands run at the server console before
+running the TP code, confirming that you can't ping or telnet to the IP.
+<P>
+<PRE>
+server:# ping 192.168.1.111
+PING 192.168.1.111 (192.168.1.111) from 192.168.1.11 : 56(84) bytes of data.
+From server.mack.net (192.168.1.11): Destination Host Unreachable
+
+server:# telnet 192.168.1.111
+Trying 192.168.1.111...
+telnet: Unable to connect to remote host: No route to host
+</PRE>
+<P>so add a route and try again (lo works here, eth0 doesn't)
+<P>
+<PRE>
+server:# route add -host 192.168.1.111 lo
+server:# telnet 192.168.1.111
+Trying 192.168.1.111...
+Connected to 192.168.1.111.
+Escape character is '^]'.
+
+Welcome to Linux 2.2.16.
+server login:
+</PRE>
+<P>This shows that you can connect to the new IP from the localhost. 
+No transparent proxy involved yet.
+<P>If you go to another machine on the same network and add a route to the new IP.
+<P>
+<PRE>
+client:# route add -host 192.168.1.111 gw 192.168.1.11
+client:# netstat -rn
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags   MSS Window  irtt Iface
+192.168.1.111   192.168.1.11    255.255.255.255 UGH       0 0          0 eth0
+192.168.1.0     0.0.0.0         255.255.255.0   U         0 0          0 eth0
+127.0.0.0       0.0.0.0         255.0.0.0       U         0 0          0 lo
+</PRE>
+<P>raw sockets work between the client and server - 
+<P>
+<PRE>
+client:# traceroute 192.168.1.111
+traceroute to 192.168.1.111 (192.168.1.111), 30 hops max, 40 byte packets
+ 1  server.mack.net (192.168.1.11)  0.634 ms  0.433 ms  0.561 ms
+</PRE>
+<P>however you can't ping (i.e. icmp doesn't work) or telnet to that IP from the other machine.
+<P>
+<PRE>
+client:# ping 192.168.1.111
+PING 192.168.1.111 (192.168.1.111) from 192.168.1.9 : 56(84) bytes of data.
+From server.mack.net (192.168.1.11): Time to live exceeded
+
+client:# telnet 192.168.1.111
+Trying 192.168.1.111...
+telnet: Unable to connect to remote host: No route to host
+</PRE>
+<P>Here's the output of tcpdump running on the target host
+<P>
+<PRE>
+14:09:09.789132 client.mack.net.1101 > tip.mack.net.telnet: S 1088013012:1088013012(0) win 32120 &lt;mss 1460,sackOK,timestamp 7632700[|tcp]> (DF) [tos 0x10]
+14:09:09.791205 server.mack.net > client.mack.net: icmp: time exceeded in-transit [tos 0xd0]
+</PRE>
+<P>(Anyone have an explanation for this, apart from the fact that icmp is not working?
+Is the lack of icmp the only thing stopping the telnet connect?)
+<P>The route to 192.168.1.111 is not needed for the next part.
+<P>
+<PRE>
+server:# route del -host 192.168.1.111
+</PRE>
+<P>Now add transparent proxy to the server to allow the server to 
+accept connects to 192.168.1.111:telnet
+<P>This is the command for 2.2.x kernels
+<P>
+<PRE>
+server:# ipchains -A input -j REDIRECT telnet -d 192.168.1.111 telnet -p tcp
+server:# ipchains -L
+Chain input (policy ACCEPT):
+target     prot opt     source                destination           ports
+REDIRECT   tcp  ------  anywhere             192.168.1.111          any ->   telnet => telnet
+Chain forward (policy ACCEPT):
+Chain output (policy ACCEPT):
+</PRE>
+<P>For 2.4.x kernels
+<P>
+<PRE>
+server:# iptables -t nat -A PREROUTING -p tcp -d 192.168.1.111 --dport telnet -j REDIRECT
+server:# iptables -L -t nat
+Chain PREROUTING (policy ACCEPT)
+target     prot opt source               destination         
+REDIRECT   tcp  --  anywhere             192.168.1.111       tcp dpt:telnet 
+
+Chain POSTROUTING (policy ACCEPT)
+target     prot opt source               destination         
+
+Chain OUTPUT (policy ACCEPT)
+target     prot opt source               destination   
+</PRE>
+<P>You still can't ping the transparent proxy IP on the server from the client
+<P>
+<PRE>
+client:# ping 192.168.1.111
+PING 192.168.1.111 (192.168.1.111) from 192.168.1.9 : 56(84) bytes of data.
+From server.mack.net (192.168.1.11): Time to live exceeded
+</PRE>
+<P>The transparent proxy IP on the server will accept telnet connects
+<P>
+<PRE>
+client:# telnet 192.168.1.111
+Trying 192.168.1.111...
+Connected to 192.168.1.111.
+Escape character is '^]'.
+
+Welcome to Linux 2.2.16.
+server login:
+</PRE>
+<P>but not requests to other services
+<P>
+<PRE>
+client:# ftp 192.168.1.111
+ftp: connect: No route to host
+ftp> 
+</PRE>
+<P>Conclusion: The new IP will only accept packets for the specified service.
+It won't ping and it won't accept packets for other services.
+<P>(Julian) (an answer from the 2.2.x kernel days)
+<P>Transparent proxy support calls ip_local_deliver from where the LVS 
+code is reached. One of the advantages of this method is that it
+is easy for a director and real-server to 
+<A HREF="LVS-HOWTO-3.html#promote">exchange roles</A> 
+in a failover setup.
+<P>
+<PRE>
+
+                        ________
+                       |        |
+                       | client |
+                       |________|
+                       CIP=192.168.1.254
+                           |
+                        (router)
+                           |
+                 VIP=192.168.1.110 (eth0, arps)
+                      __________
+                     |          |
+                     | director |
+                     |__________|
+                     DIP=192.168.1.1 (eth1, arps)
+                           |
+                           |
+          -------------------------------------
+          |                |                  |
+   RIP1=192.168.1.2   RIP2=192.168.1.3  RIP3=192.168.1.4 (eth0)
+   _____________     _____________      _____________
+  |             |   |             |    |             |
+  | real-server |   | real-server |    | real-server |
+  |_____________|   |_____________|    |_____________|
+          |                |                  |
+      (router)          (router)           (router)
+          |                |                  |
+          ----------------------------------------------> to client
+</PRE>
+<P>Here's a script to run on 2.2.x real-servers/directors to setup Horms' method.
+This is incorporated into the configure script.
+<P>
+<PRE>
+#!/bin/sh
+#rc.horms
+#script by Joseph Mack and Horms (C) 1999, released under GPL.
+#Joseph Mack jmack@wm7d.net, Horms horms@vergenet.net
+#This code is part of the Linux Virtual Server project
+#http://www.linuxvirtualserver.org
+#
+#
+#Horm's method for solving the LVS arp problem for a VS-DR LVS.
+#Uses ipchains to redirect a packet destined for an external
+#machine (in this case the VIP) to the local device.
+
+#-----------------------------------------------------
+#Instructions:
+#
+#1. Director: Setup normally (eg turn on LVS services there with ipvsadm).
+#2. Real-servers: Must be running 2.2.x kernel.
+# 2.1 recompile the kernel (and reboot) after turning on the following under "Networking options"
+#       Network firewalls
+#       IP: firewalling
+#       IP: transparent proxy support
+#       IP: masquerading
+# 2.2 Setup the real-server as if it were a regular leaf node on the network,
+#      ie with the same gateway and IP as if it were in the LVS, but DO NOT
+#      put the VIP on the real-server. The real-server will only have its regular IP
+#      (called the RIP in the HOWTO).
+#3. Edit "user configurable" stuff below"
+#4. Run this script
+#-----------------------------------------------------
+#user configurable stuff
+
+IPCHAINS="/sbin/ipchains"
+VIP="192.168.1.110"
+
+#services can be represented by their name (in /etc/services) or a number
+#SERVICES is a quote list of space separated strings
+# eg SERVICES="telnet"
+#    SERVICES="telnet 80"
+#    SERVICES="telnet http"
+#Since the service is redirected to the local device,
+#make sure you have SERVICE listening on 127.0.0.1
+#
+SERVICES="telnet http"
+#
+#----------------------------------------------------
+#main:
+
+#turn on IP forwarding (off by default in 2.2.x kernels)
+echo "1" > /proc/sys/net/ipv4/ip_forward
+
+#flush ipchains table
+$IPCHAINS -F input
+
+#install SERVICES
+for SERVICE in $SERVICES
+do
+        {
+        echo "redirecting ${VIP}:${SERVICE} to local:${SERVICE}"
+        $IPCHAINS -A input -j REDIRECT $SERVICE -d $VIP $SERVICE -p tcp
+        }
+done
+
+#list ipchain rules
+$IPCHAINS -L input
+
+#rc.horms----------------------------------------------
+</PRE>
+<P>Here's the conf file for a VS-DR LVS using TP on both the
+director and the real-servers. This is for a 2.2.x kernel
+director. 
+(For a 2.4.x director, the VIP device can't be TP - TP doesn't work on a 2.4.x director).
+<P>
+<PRE>
+#-------------------------------------
+#lvs_dr.conf for TP on director and real-server
+#you will have to add a host route or equivelent on the client/router
+#so that packets for the VIP are routed to the director
+LVS_TYPE=VS_DR
+INITIAL_STATE=on
+#note director VIP device is TP
+VIP=TP lvs 255.255.255.255 lvs
+DIRECTOR_INSIDEIP=eth0 directorinside 192.168.1.0 255.255.255.0 192.168.1.255
+DIRECTOR_DEFAULT_GW=client
+SERVICE=t telnet rr real-server1 real-server2   
+#note real-server VIP device is TP
+SERVER_VIP_DEVICE=TP
+SERVER_NET_DEVICE=eth0
+SERVER_DEFAULT_GW=client
+#----------end lvs_dr.conf------------------------------------
+</PRE>
+<P>Here's the output from ipchains -L showing the redirects for just
+the 2.2.x director
+<P>
+<PRE>
+Chain input (policy ACCEPT):
+target     prot opt     source                destination           ports
+REDIRECT   tcp  ------  anywhere             lvs2.mack.net         any ->   telnet => telnet
+REDIRECT   tcp  ------  anywhere             lvs2.mack.net         any ->   telnet => telnet
+REDIRECT   tcp  ------  anywhere             lvs2.mack.net         any ->   www => www
+REDIRECT   tcp  ------  anywhere             lvs2.mack.net         any ->   www => www
+Chain forward (policy ACCEPT):
+Chain output (policy ACCEPT):
+</PRE>
+<P>
+<H2><A NAME="ss15.3">15.3 Transparent proxy for 2.4.x</A>
+</H2>
+
+<P>
+<P>Transparent proxy for 2.2.x kernels is installed with ipchains. 
+<P>For 2.4.x kernels transparent proxy is built on netfilter 
+and is installed with iptables 
+(you need iptables support in the kernel and the ip_tables module must be loaded). 
+The ip_tables module is incompatible with the ipchains module 
+(which in 2.4.x is available for compatibility with scripts written for 2.2.x kernels). 
+If present, the ipchains module must be unloaded.
+<P>The command for installing transparent proxy with iptables for 2.4.x came from
+looking in Daniel Kiracofe's 
+<CODE>drk@unxsoft.com</CODE>
+<A HREF="http://www.unxsoft.com/TransparentProxy.html">Transparent Proxy with Squid mini-HOWTO</A> 
+and guessing the likely command. It turns out to be
+<P>
+<PRE>
+iptables -t nat -A PREROUTING [-i $SERVER_NET_DEVICE] -d $VIP -p tcp --dport $SERVICE -j REDIRECT 
+</PRE>
+<P>(where $SERVICE = telnet, $SERVER_NET_DEVICE = eth0).
+<P>Here's the result of installing the VIP by transparent proxy on one of the
+real-servers.
+<P>
+<PRE>
+realserver:~# iptables -L -t nat
+Chain PREROUTING (policy ACCEPT)
+target     prot opt source               destination         
+REDIRECT   tcp  --  anywhere             lvs2.mack.net      tcp dpt:telnet 
+REDIRECT   tcp  --  anywhere             lvs2.mack.net      tcp dpt:http 
+
+Chain POSTROUTING (policy ACCEPT)
+target     prot opt source               destination         
+
+Chain OUTPUT (policy ACCEPT)
+target     prot opt source               destination         
+</PRE>
+ 
+<P>This works fine for the real-server allowing it to accept packets for the
+VIP, without having the VIP on an ethernet device (eg lo, eth0). 
+If you do the same on the director,
+setup for an LVS with (say) telnet forwarded in the ipvsadm tables, 
+then the telnet connect request from the client is accepted 
+by the director, rather than forwarded by ipvs to the real-servers 
+(tcpdump sees a normal telnet login to the director). 
+Apparently ipchains is sending the packets
+to a place that ipvs can't get at them.
+<P>(Joe)
+<PRE>
+> I have got TP to work on a VS-DR telnet 2.4 real-server with the command
+>
+> #iptables -t nat -A PREROUTING -p tcp -d $VIP --dport telnet -j REDIRECT
+>
+> When I put the VIP onto the director this way, the LVS doesn't work.
+> I connect to the director instead of the real-servers. 
+> ipvsadm doesn't show any connections (active or otherwise)
+>
+> If I run the same command on the director, with ipvsadm blank
+> (ie no LVS configured), then I connect to the director from the
+> client (as expected) getting the director's telnet login.
+>
+> I presume that I'm coming in at the wrong place in the input chain
+> of the director and ipvsadm is not seeing the packets?
+</PRE>
+<P>(Julian)
+<P>I haven't tried tproxy in 2.4 but in theory it can't work.
+The problem is that netfilter implements tproxy by mangling the
+destination address in the prerouting. LVS requires from the tproxy
+implementation only to deliver the packet locally and not to alter
+the header. So, I assume LVS detects the packets with daddr=local_addr
+and refuses to work.
+<P>Netfilter maintains a sockopt SO_ORIGINAL_DST that can be
+used from the user processes to obtain the original dest addr/port
+before they are mangled in the pre routing nat place. This can be used
+from the squids, for example, to obtain these original values.
+<P>If LVS wants to support this broken tproxy in netfilter we
+must make a lookup in netfilter to receive the original dst and then
+again to mangle (for 2nd time) the dst addr/port. IMO, this is very
+bad and requires LVS always to require netfilter nat because it will
+always depend on netfilter: LVS will be compiled to call netfilter
+functions from its modules.
+<P>So, the only alternative remains to receive packets with
+advanced routing with fwmark rules. There is one problem in 2.2 and
+2.4 when the tproxy setups must return ICMP to the clients (they
+are internal in such setup), for example, when there is no real server
+LVS returns ICMP DEST_UNREACH:PORT_UNREACH. In this case both kernels
+mute and don't return the ICMP. icmp_send() drops it. I contacted
+Alexey Kuznetsov, the net maintainer, but he claims there are more
+such places that must be fixed and "ip route add table 100 local
+0/0 dev lo" is not a good command to use. But in my tests
+I don't have any problems, only the problem with dropped ICMP
+replies from the director.
+<P>So, for TP, I'm not sure if we can support it in the
+director. May be it can work for the real servers and even when
+the packet is mangled I don't expect peformance problems but who
+knows.
+<P>
+<H2><A NAME="TP_QandA"></A> <A NAME="ss15.4">15.4 Transparent proxy Q&amp;A</A>
+</H2>
+
+<P>
+<P>Q. How does a packet get to the host which is accepting packets for the VIP
+if the host doesn't have the VIP on an eth device to respond to arp requests?  
+<P>A. You have to send it there. 
+<P>On the real-servers in a VS-DR LVS this is already handled for you. 
+In VS-DR when the director wants to send a packet to a real-server, 
+it looks up the MAC address for the RIP and sends the packet with addresses 
+CIP->VIP by linklayer to the MAC address of the real-server. 
+Once the packet arrives at the real-server, processes listening to VIP:port 
+pick up the packet. 
+<P>As pointed out by Julian, you can put a transparent proxy IP onto any host, 
+so you can use transparent proxy to put the VIP onto the director if you like
+(for 2.2.x kernels). 
+To receive the packet for the VIP, the director has to be the default gw 
+for the network in the incoming router's table (or the router needs a host 
+route for the VIP to the director). 
+<P>The same problem exists when 
+<A HREF="LVS-HOWTO-8.html#routing_fwmark">accepting packets with fwmark</A>.
+<P>Q. Some demons listen only to specific IPs. What IP is the telnet/httpd 
+listening to when it accepts a connection by transparent proxy?
+<P>A. It depends where you are when you make the connect request (this is for 2.2.x kernels). 
+<P>example:
+<P>You are on the console of a host and add x.x.x.111:http by transparent
+proxy and setup the httpd to listen to x.x.x.111:80. 
+You cannot ping x.x.x.111. To connect to x.x.x.111:http you need to
+<P># route add -host 192.168.1.111 lo
+<P>(adding a route to eth0 does not work).
+<P>If you go to an outside machine, you still cannot ping x.x.x.111 and you
+cannot connect to x.x.x.111:http unless you make the target box the default gw
+or add a host route to x.x.x.111. 
+<P>If you now go back to the console of the transparent proxy machine and
+change the httpd to listen to 127.0.0.1:http (and not to x.x.x.111:http)
+you can still connect to x.x.x.111:http even though nothing is listening to that
+IP:port (linux tcpip does local delivery to local IPs). 
+(You can also connect to 127.0.0.1:http, but this is not concerned with
+transparent proxy.)
+<P>Returning to the outside machine, you cannot connect to x.x.x.111:http.
+<P>The connections from the outside machine model connections to the director
+with the VIP by transparent proxy, while the connections from the console
+model the real-server which has a packet delivered from the director.
+On the real-server you could have your services listening to 127.0.0.1
+rather than the VIP. You may run into DNS problems (see 
+<A HREF="LVS-HOWTO-10.html#indexing">Running  indexing programs</A>) if the process listening to 127.0.0.1 doesn't know that
+it's answering to lvs.domain.org.
+<P>
+<H2><A NAME="identd_with_2.4_TP"></A> <A NAME="ss15.5">15.5 Identd doesn't delay connection with when packets are received by TP on 2.4.x real-servers</A>
+</H2>
+
+<P>
+<P>Here's the data showing that TP behaves differently for 2.2 and 2.4 kernels.
+If you want to 
+<A HREF="#2.4_TP_IP">skip ahead</A>, the piece of information
+you need is that the IP of the packet when it arrives on the target machine by TP, 
+is different for 2.2 and 2.4 TP. 
+<P>As we shall see, for 2.2.x the TP'ed packets arrive on the VIP,
+while for 2.4.x, the TP'ed packets arrive on the RIP.
+<P>
+<H3>Real-server, Linux 2.4.2 kernel accepting packets for VIP on lo:110, is delayed</H3>
+
+<P>
+<P>Here's the tcpdump on the real-server (bashfull) for a telnet request delayed
+by authd (the normal result for LVS). Real-server 2.4.2 with Julian's hidden patch,
+director 0.2.5-2.4.1. The VIP on the real-server is on lo:110.
+<P>Note: all packets on the real-server are originating and arriving on the VIP (lvs2)
+as expected for a VS-DR LVS.
+<P>
+<PRE>
+initial telnet request
+
+21:04:46.602568 client2.1174 > lvs2.telnet: S 461063207:461063207(0) win 32120 &lt;mss 1460,sackOK,timestamp 17832675[|tcp]> (DF) [tos 0x10]
+21:04:46.611841 lvs2.telnet > client2.1174: S 3724125196:3724125196(0) ack 461063208 win 5792 &lt;mss 1460,sackOK,timestamp 514409[|tcp]> (DF)
+21:04:46.612272 client2.1174 > lvs2.telnet: . ack 1 win 32120 &lt;nop,nop,timestamp 17832676 514409> (DF) [tos 0x10]
+21:04:46.613965 client2.1174 > lvs2.telnet: P 1:28(27) ack 1 win 32120 &lt;nop,nop,timestamp 17832676 514409> (DF) [tos 0x10]
+21:04:46.614225 lvs2.telnet > client2.1174: . ack 28 win 5792 &lt;nop,nop,timestamp 514409 17832676> (DF)
+
+real-server makes authd request to client
+
+21:04:46.651500 lvs2.1061 > client2.auth: S 3738365114:3738365114(0) win 5840 &lt;mss 1460,sackOK,timestamp 514413[|tcp]> (DF)
+21:04:49.651162 lvs2.1061 > client2.auth: S 3738365114:3738365114(0) win 5840 &lt;mss 1460,sackOK,timestamp 514713[|tcp]> (DF)
+21:04:55.651924 lvs2.1061 > client2.auth: S 3738365114:3738365114(0) win 5840 &lt;mss 1460,sackOK,timestamp 515313[|tcp]> (DF)
+
+after delay of 10secs, telnet request continues
+
+21:04:56.687334 lvs2.telnet > client2.1174: P 1:13(12) ack 28 win 5792 &lt;nop,nop,timestamp 515416 17832676> (DF)
+21:04:56.687796 client2.1174 > lvs2.telnet: . ack 13 win 32120 &lt;nop,nop,timestamp 17833684 515416> (DF) [tos 0x10]
+</PRE>
+<P>
+<H3>Real-server, Linux 2.4.2, accepting packets for VIP by TP, is not delayed</H3>
+
+<P>
+<P>Here's the tcpdump on the real-server (bashfull) for a telnet request which
+connects immediately. This is not the normal result for LVS. 
+Real-server 2.4.2 with Julian's hidden patch (not used),
+director 0.2.5-2.4.1. Packets on the VIP are being accepted by TP rather than
+on lo:0 (the only difference).
+<P>Note: some packets on the real-server (bashfull) are arriving and originating on the
+VIP (lvs2) and some on the RIP (bashfull). In particular all telnet packets from
+the CIP are arriving on the RIP, while all telnet packets from the real-server
+are originating on the VIP. For authd, all packets to and from the real-server
+are using the RIP.
+<P>
+<PRE>
+initial telnet request
+
+20:56:43.638602 client2.1169 > bashfull.telnet: S 4245054245:4245054245(0) win 32120 &lt;mss 1460,sackOK,timestamp 17784379[|tcp]> (DF) [tos 0x10]
+20:56:43.639209 lvs2.telnet > client2.1169: S 3234171121:3234171121(0) ack 4245054246 win 5792 &lt;mss 1460,sackOK,timestamp 466118[|tcp]> (DF)
+20:56:43.639654 client2.1169 > bashfull.telnet: . ack 3234171122 win 32120 &lt;nop,nop,timestamp 17784380 466118> (DF) [tos 0x10]
+20:56:43.641370 client2.1169 > bashfull.telnet: P 0:27(27) ack 1 win 32120 &lt;nop,nop,timestamp 17784380 466118> (DF) [tos 0x10]
+20:56:43.641740 lvs2.telnet > client2.1169: . ack 28 win 5792 &lt;nop,nop,timestamp 466118 17784380> (DF)
+
+real-server makes authd request to client
+
+20:56:43.690523 bashfull.1057 > client2.auth: S 3231319041:3231319041(0) win 5840 &lt;mss 1460,sackOK,timestamp 466123[|tcp]> (DF)
+20:56:43.690785 client2.auth > bashfull.1057: S 4243940839:4243940839(0) ack 3231319042 win 32120 &lt;mss 1460,sackOK,timestamp 17784385[|tcp]> (DF)
+20:56:43.691125 bashfull.1057 > client2.auth: . ack 1 win 5840 &lt;nop,nop,timestamp 466123 17784385> (DF)
+20:56:43.692638 bashfull.1057 > client2.auth: P 1:10(9) ack 1 win 5840 &lt;nop,nop,timestamp 466123 17784385> (DF)
+20:56:43.692904 client2.auth > bashfull.1057: . ack 10 win 32120 &lt;nop,nop,timestamp 17784385 466123> (DF)
+20:56:43.797085 client2.auth > bashfull.1057: P 1:30(29) ack 10 win 32120 &lt;nop,nop,timestamp 17784395 466123> (DF)
+20:56:43.797453 client2.auth > bashfull.1057: F 30:30(0) ack 10 win 32120 &lt;nop,nop,timestamp 17784395 466123> (DF)
+20:56:43.798336 bashfull.1057 > client2.auth: . ack 30 win 5840 &lt;nop,nop,timestamp 466134 17784395> (DF)
+20:56:43.799519 bashfull.1057 > client2.auth: F 10:10(0) ack 31 win 5840 &lt;nop,nop,timestamp 466134 17784395> (DF)
+20:56:43.799738 client2.auth > bashfull.1057: . ack 11 win 32120 &lt;nop,nop,timestamp 17784396 466134> (DF)
+
+telnet connect continues, no delay
+
+20:56:43.835153 lvs2.telnet > client2.1169: P 1:13(12) ack 28 win 5792 &lt;nop,nop,timestamp 466137 17784380> (DF)
+20:56:43.835587 client2.1169 > bashfull.telnet: . ack 13 win 32120 &lt;nop,nop,timestamp 17784399 466137> (DF) [tos 0x10]
+</PRE>
+<P>Evidently TP on the real-server is making the real-server think that the packets
+arrived on the RIP, hence the authd call is made from the RIP.
+<P>As it happens in my test setup, the client can connect directly to the RIP.
+(In a VS-DR LVS, the client doesn't exchange packets with the RIP, 
+so I haven't blocked this connection. 
+In production, the router would not allow these packets to pass). 
+Since the authd packets are between the RIP and CIP,
+the authd exchange can proceed to completion.
+<P>
+<H3>Real-server, Linux 2.2.14, accepting packets for VIP by TP, is delayed</H3>
+
+<P>
+<P>Here's the tcpdump on the real-server (bashfull) for a telnet request which
+connects immediately. This is not the normal result for LVS. 
+Real-server 2.2.14,
+director 0.2.5-2.4.1. Packets on the VIP are being accepted by TP rather than
+on lo:0.
+<P>Note: TP is different in 2.2 and 2.4 kernels. 
+Unlike the case for the 2.4.2 real-server, the packets all arrive at the RIP.
+<P>
+<PRE>
+initial telnet request
+
+22:16:23.407607 client2.1177 > lvs2.telnet: S 707028448:707028448(0) win 32120 &lt;mss 1460,sackOK,timestamp 18262396[|tcp]> (DF) [tos 0x10]
+22:16:23.407955 lvs2.telnet > client2.1177: S 3961823491:3961823491(0) ack 707028449 win 32120 &lt;mss 1460,sackOK,timestamp 21648[|tcp]> (DF)
+22:16:23.408385 client2.1177 > lvs2.telnet: . ack 1 win 32120 &lt;nop,nop,timestamp 18262396 21648> (DF) [tos 0x10]
+22:16:23.410096 client2.1177 > lvs2.telnet: P 1:28(27) ack 1 win 32120 &lt;nop,nop,timestamp 18262396 21648> (DF) [tos 0x10]
+22:16:23.410343 lvs2.telnet > client2.1177: . ack 28 win 32120 &lt;nop,nop,timestamp 21648 18262396> (DF)
+
+authd request from real-server
+
+22:16:23.446286 lvs2.1028 > client2.auth: S 3966896438:3966896438(0) win 32120 &lt;mss 1460,sackOK,timestamp 21652[|tcp]> (DF)
+22:16:26.445701 lvs2.1028 > client2.auth: S 3966896438:3966896438(0) win 32120 &lt;mss 1460,sackOK,timestamp 21952[|tcp]> (DF)
+22:16:32.446212 lvs2.1028 > client2.auth: S 3966896438:3966896438(0) win 32120 &lt;mss 1460,sackOK,timestamp 22552[|tcp]> (DF)
+
+after delay of 10secs, telnet proceeds
+
+22:16:33.481936 lvs2.telnet > client2.1177: P 1:13(12) ack 28 win 32120 &lt;nop,nop,timestamp 22655 18262396> (DF)
+22:16:33.482414 client2.1177 > lvs2.telnet: . ack 13 win 32120 &lt;nop,nop,timestamp 18263404 22655> (DF) [tos 0x10]
+</PRE>
+<P>
+<H2><A NAME="2.4_TP_IP"></A> <A NAME="ss15.6">15.6 What IP TP packets arriving on?</A>
+</H2>
+
+<P>
+<P>Note: for TP, there is no VIP on the real-servers as seen by ifconfig.
+<P>Since telnetd on the real-servers listens on 0.0.0.0, 
+we can't tell which IP the packets have on the real-server after being TP'ed.
+tcpdump only tells you the src_addr after the packets have left the sending host. 
+<P>Here's the setup for the test. 
+<P>The IP of the packets after arriving by TP 
+was tested by varying the IP (localhost, RIP or VIP)
+that the httpd listens to on the real-servers. 
+At the same time the base address of the web page was
+changed to be the same as the IP that the httpd was listening to.
+The nodes on each network link
+can route to and ping each other (eg 192.168.1.254 and 192.168.1.12).
+<P>
+<PRE>
+        ____________
+       |            |192.168.1.254 (eth1)
+       |  client    |----------------------
+       |____________|                     |
+     CIP=192.168.2.254 (eth0)             |
+              |                           |
+              |                           |
+     VIP=192.168.2.110 (eth0)             |
+        ____________                      | 
+       |            |                     |
+       |  director  |                     |
+       |____________|                     |
+     DIP=192.168.1.9 (eth1, arps)         |
+              |                           |
+           (switch)------------------------
+              |         
+     RIP=192.168.1.12 (eth0)
+     VIP=192.168.2.110 (VS-DR, lo:0, hidden)
+        _____________
+       |             |
+       | real-server |
+       |_____________|
+</PRE>
+<P>
+<P>The results (VS-DR LVS) are
+<P>For 2.2.x realservers
+<P>
+<UL>
+<LI>the httpd can bind to the VIP, RIP and localhost.</LI>
+<LI>LVS client gets webpage if real-server is listening to RIP or VIP.</LI>
+<LI>LVS client does not get webpage if real-server is listening to localhost.</LI>
+</UL>
+<P>For 2.4.x realservers
+<P>
+<UL>
+<LI>httpd can bind to the RIP and localhost.</LI>
+<LI>httpd cannot bind to the VIP.</LI>
+<LI>LVS client gets webpage if real-server is listening to RIP.</LI>
+<LI>LVS client does not get webpage if real-server is listening to localhost.</LI>
+</UL>
+<P>During tests, the browser says "connecting to VIP", then says "transferring from..."
+<P>
+<UL>
+<LI>VS-DR, VIP on TP, kernel 2.4.2, "transferring data from RIP"</LI>
+<LI>VS-DR, VIP on TP, kernel 2.2.14, "transferring data from VIP" (or RIP)</LI>
+<LI>VS-DR VIP on lo:0, httpd listening to VIP, "transferring data from VIP"</LI>
+<LI>VS-Tun VIP on tunl0:0, httpd listening on VIP, "transferring from VIP"</LI>
+<LI>VS-NAT, httpd listening on RIP, "transferring data from realserver1" (or realserver2)</LI>
+</UL>
+<P>Some of these connections are problematic. 
+The client in a VS-DR LVS isn't supposed to be getting packets from the RIP.
+What is happening is 
+<P>
+<UL>
+<LI>the httpd on the real-server is listening on the RIP </LI>
+<LI>the base address of the webpage is the RIP</LI>
+<LI>an incoming request from the client to the VIP will retrieve a webpage
+with references to gif etc that are at the RIP</LI>
+<LI>the client will then ask for the gifs from the RIP.</LI>
+<LI>in the above setup that I use for testing, the client does not request packets from the RIP.</LI>
+<LI>in the above setup, the client can connect to the RIP directly (this will not be allowed in a production server, either the router will prevent the connection, or the RIP will be a non-routable IP).</LI>
+<LI>the client retrieves the gifs and the rest of the page directly from the real-server</LI>
+</UL>
+<P>The way to prevent this is to remove the route on the client to the RIP network
+(eg see 
+<A HREF="LVS-HOWTO-12.html#Pearthree">removing routes not needed for VS-DR</A>).
+Doing so when the httpd is listening to the RIP and the base address is the
+RIP causes the browser on the client to hang. 
+This shows that the client is really retrieving packets directly
+from the RIP.
+Changing the base address of the
+webpage back to the VIP allows the webpage to be delivered to the client,
+showing that the client is now retrieving packets by making requests to the
+VIP via the director.
+<P>It would seem then that with 2.4 TP, the real-server is receiving packets on the
+RIP, rather than the VIP as it does with 2.2 TP. With a service listening to only
+1 port (eg httpd) then the httpd has to
+<P>
+<UL>
+<LI>listen on the RIP</LI>
+<LI>the addresses on the webpage have to be for the VIP</LI>
+</UL>
+<P>The client will then ask for the webpage at the VIP. 
+The real-server will accept this request on the RIP and return
+a webpage full of references to the VIP (eg gifs). 
+The client will then ask for the gifs from the VIP.
+The real-server will accept the requests on the RIP and return
+the gifs.
+<P>
+<H2><A NAME="ss15.7">15.7 Take home lesson for setting up TP on real-servers</A>
+</H2>
+
+<P>
+<P>
+<H3>2.2.x</H3>
+
+<P>
+<P>Let httpd listen on VIP or RIP, return pages with references to VIP
+<P>
+<H3>2.4.x</H3>
+
+<P>
+<P>Let httpd listen on RIP, return pages with references to VIP.
+<P>
+<H2><A NAME="identd_with_TP_real-servers"></A> <A NAME="ss15.8">15.8 Handling identd requests from 2.4.x VS-DR real-servers using TP</A>
+</H2>
+
+<P>
+<P>Since the identd request is coming from the RIP (rather than the VIP)
+on the real-server, you can use
+Julian's 
+<A HREF="LVS-HOWTO-20.html#NAT_with_VS-DR">method for NAT'ing client requests from real-servers</A>.
+<P>
+<P>
+<H2><A NAME="ss15.9">15.9 Performance of Transparent Proxy</A>
+</H2>
+
+<P>
+<P>Using transparent proxy instead of a regular ethernet device 
+has slightly higher latency, but the same maximum throughput.
+<P>For performance of transparent proxy compared to accepting packets on an
+ethernet device see the 
+<A HREF="http://www.linuxvirtualserver.org/Joseph.Mack/performance/single_realserver_performance.html">performance page</A>.
+<P>Transparent proxy requires reprocessing of incoming packets, 
+and could have a similar speed penalty as VS-NAT. However only the incoming 
+packets are reprocessed. Initial results (before the performance tests above)
+were initially not encouraging.
+<P>From: Doug Bagley <CODE>doug@deja.com</CODE>
+<PRE>
+ > Subject: [lvs-users] chosen arp problem solution can apparently affect performance
+ > 
+ > I was interested in seeing if the linux/ipchains workaround for the
+ > arp problem would perform just as well as the arp_invisible kernel
+ > patch.  It is apparently much worse.
+ > 
+ > I ran a test with one client running ab ("apache benchmark"), one
+ > director, and one real-server running Apache.  They are all various
+ > levels of pentium desktop machines running 2.2.13.
+ > 
+ > Using the arp_invisible patch/dummy0 interface, I get 226 HTTP
+ > requests/second.  Using the ipchains redirect method, I get 70
+ > requests per second.  All other things remained the same during the
+ > test.
+</PRE>
+<P>See the 
+<A HREF="http://www.linuxvirtualserver.org/Joseph.Mack/performance/single_realserver_performance.html">performance page</A>
+for discussion and sample graphs of hits/sec
+for http servers. Hits/sec can increase to high levels as the payload
+decreases in size. While large numbers for hits/sec may be impressive,
+they only indicate one aspect of a web server's performance. If large
+(> 1 packet) files are transferred/hit or computation is involved,
+then hits/sec is not a useful measure of web performance.
+<P>Here's the current explanation for decreased latency of transparent proxy.
+<P>Kyle Sparger <CODE>ksparger@dialtoneinternet.net</CODE>
+<PRE>
+ > Logically, it's just a function of the way the redirect code operates.
+ > 
+ > Without redirect:
+ > Ethernet -> TCP/IP -> Application -> TCP/IP -> Ethernet
+ >
+ > With redirect:
+ > Ethernet -> TCP/IP -> Firewall/Redirect Code -> TCP/IP -> Application ->
+ >   TCP/IP -> Ethernet
+ >
+ > That would definitely explain the slowdown, since _every single packet_
+ > received is going to go through these extra steps.
+</PRE>
+<P>Other people are happy with TP
+<P>(Jerry Glomph Black <CODE>black@real.com</CODE>)
+<P>The revival of Horms' posting, which I overlooked a month ago, was
+a lifesaver for us. We had a monster load distribution problem, and 
+spread 4 virtual IP numbers across 10 'real' boxes (running Roxen, 
+a fantastic web platform). The ipchains-REDIRECT feature works perfectly, 
+without any of that arp aggravation! A PII_450 held up just fine at 
+20 megabits/s of HTTP -REQUEST- TRAFFIC!
+<P>
+<HR>
+<A HREF="LVS-HOWTO-16.html">Next</A>
+<A HREF="LVS-HOWTO-14.html">Previous</A>
+<A HREF="LVS-HOWTO.html#toc15">Contents</A>
+</BODY>
+</HTML>

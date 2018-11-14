@@ -1,0 +1,124 @@
+<!doctype html public "-//w3c//dtd html 4.0 transitional//en">
+<html>
+<head>
+   <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">
+   <title>LVS defense strategies against DoS attack</title>
+</head>
+
+<body text="#000000" bgcolor="#FFFFFF" link="#0000FF" vlink="#FF0000">
+
+<h1>LVS defense strategies against DoS attack</h1>
+
+<p>In the IPVS version 0.9.10 or later, an entry is created for each
+new connection in order to keep its state (such as the server that new
+connection is redirected to), and the size of each entry is 124 bytes
+thus 128 bytes effective memory is needed for each entry. The
+Denial-of-Service attck to the LVS host is to aggressively increase
+the number of entries until the host run out of memory. Three defense
+strategies are currently implemented against the kind of DoS
+attack. They are the drop_entry defense, the drop_packet defense and
+the secure_tcp defense. Those strategies are controlled by the sysctl
+variables whether the one is effective or not in the kernel.
+
+<h2>1. The drop_entry defense strategy</h2>
+
+<p>The drop_entry defense is to randomly drop entries in the
+connection hash table, just in order to collect back some memory for
+new connections. In the current code, the drop_entry procedure can be
+actived every second, then it randomly scans 1/32 of the whole and
+drops entries that are in the SYN-RECV/SYNACK state, which should be
+effective against syn-flooding attack. Since the tcp state transition
+in the LVS is just determined by some flags of IP packets, it doesn't
+verify TCP sequence numbers and it is not real tcp state transition,
+the malicious attack can generate an SYN packet and then follow an ACK
+packet, which can fool the LVS to put the entry in the ESTABLISHED
+state.  For entries that are in the ESTABLISHED/UDP state, we use a
+little more complicated drop mechanism. If the time to the last
+received is less than 60 seconds, the entry is not dropped. If the
+time is not less than 60 seconds, then the incoming packet counter of
+the entry is considered, the entry is not dropped if the number of
+incoming packets is larger than 8, for the entries whoes number of
+incoming packets are from 2 to 8, the less the number is, the more
+probility the entry is dropped.
+
+<p>This strategy is controlled by the sysctl variable
+/proc/sys/net/ipv4/vs/drop_entry. The valid values are from 0 to 3,
+where 0 means that this strategy is always disabled, 1 and 2 mean
+automatic  modes (when there is no enough available memory, the
+strategy is enabled and the variable is automatically set to 2,
+otherwise  the strategy is disabled and the variable is set to 1), and
+3 means that that the strategy is always enabled.
+
+<p>We use the available memory threshold to determine if the system
+has available memory. It can be changed by
+/proc/sys/net/ipv4/vs/amemthresh, the value is in memory page
+unit. The default value is 1024 pages.
+
+<h2>2. The drop_packet defense strategy</h2>
+
+<p>If the LVS box is under the serve distributed DoS attack, the
+drop_entry defense may not keep pace with the speed of connection
+generation by the distributed DoS attack. The drop_packet defense is
+designed to drop 1/rate packets before forwarding them to real
+servers. If the rate is 1, then drop all the incoming packets.
+
+<p>This strategy is controlled by the sysctl variable
+/proc/sys/net/ipv4/vs/drop_packet. The value definition is the same as
+that of the drop_entry. In the automatic mode, the rate is determined
+by the follow formula:
+
+<blockquote>
+rate = amemthresh / (amemthresh - available_memory)
+</blockquote>
+
+<p>when available memory is less than the available memory threshold.
+
+<p>When the mode 3 is set, the always mode drop rate is controlled by
+the /proc/sys/net/ipv4/vs/am_droprate. The default value is 10.
+
+<h2>3. The secure_tcp defense strategy</h2>
+
+<p>The secure_tcp defense is to use a more complicated state
+transtition table and some possible short timeouts of each state. In
+the VS/NAT, it delays the entering the ESTABLISHED until the real
+server starts to send data and ACK packet (after 3-way handshake).
+
+<p>This strategy is controlled by the sysctl variable
+/proc/sys/net/ipv4/vs/secure_tcp. The value definition is the same as
+the above ones.
+
+<p>The timeout of secure tcp states can be tuned by the following
+sysctl variables:
+
+<blockquote>
+<pre>
+/proc/sys/net/ipv4/vs/timeout_close
+/proc/sys/net/ipv4/vs/timeout_closewait
+/proc/sys/net/ipv4/vs/timeout_established
+/proc/sys/net/ipv4/vs/timeout_finwait
+/proc/sys/net/ipv4/vs/timeout_icmp
+/proc/sys/net/ipv4/vs/timeout_lastack
+/proc/sys/net/ipv4/vs/timeout_listen
+/proc/sys/net/ipv4/vs/timeout_synack
+/proc/sys/net/ipv4/vs/timeout_synrecv
+/proc/sys/net/ipv4/vs/timeout_synsent
+/proc/sys/net/ipv4/vs/timeout_timewait
+/proc/sys/net/ipv4/vs/timeout_udp
+</pre>
+</blockquote>
+
+In the secure_tcp defense, we recommand little timeout for the
+SYN_RECV state such as 10 seconds or less. This state is used for
+VS/NAT only when the secure_tcp variable is 2 or 3. For the
+DR/TUN/LOCAL forwarding methods, the first state is SYN_ACK.
+
+<hr WIDTH="100%">
+
+<p align="center">
+<font size="-1">
+$Id: defense.html,v 1.2 2001/06/07 20:09:39 copeland Exp $
+<br>Created on: 2000/4/9
+</font>
+
+</body>
+</html>

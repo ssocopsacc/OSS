@@ -1,0 +1,331 @@
+2012-09-17  Ryan O'Hara <rohara@redhat.com> 0.8.6
+    * Nanny expects line 'load average' but ruptime prints only
+    'load'. (#550126)
+    * Nanny should use default port only when port is not
+    specified. (##565813)
+    * Add option for init script to delay startup. (#593730)
+    * Add piranha_gui shell script to start httpd. (#604741)
+    * Fix init script status and stop actions. (#613920)
+    * Fix segfault when reloading lvsd after removing virtual
+    service. (#703146)
+    * Add hard_shutdown option. (#593728)
+    * Change directory when starting piranha_gui to avoid selinux
+    AVC. (#628872)
+    * Replace HTTP GET with HTTP POST in virtual server UI. (#708036)
+    * Send SIGTERM to pulse if nanny or lvsd process dies. (#706881)
+    * Add CIDR /23 netmask to piranha UI. (#729828)
+    * Add master and backup parameters to ipvsadm --stop-daemon
+    command. (#749594)
+    * Close file descriptor after reading configuration
+    file. (#747300)
+    * Fix segfault in lvsd when re-reading configuration
+    file. (#785720)
+    * Add option to specify mcast interface for sync daemon. (#788541)
+    * Add option to specify syncid for sync daemon. (#717556)
+    * Add options to specify IPVS network timeouts. (#745271)
+    * Echo newline after init script reload command. (#798362)
+    * Allow nanny to write to syslog when --nodaemon option is
+    specified. (#815887)
+    * Call openlog whenever LVS_FLAG_SYSLOG flag is set. (#815887)
+    * Add SIGCHLD handler to pulse for lvs mode. (#813906)
+    * Only set timeout values when specified in HTTP GET
+    method. (#857917)
+
+2007-06-21  Marek Grac <mgrac@redhat.com> 
+    * Fix 243278 - Wrong init scripts
+
+2006-08-17  Stanko Kupcevic <kupcevic@redhat.com> 0.8.5
+    * Removed .htaccess file, as equal configuration
+    already in /etc/sysconfig/ha/conf/httpd.conf
+    * Added logrotate conf file
+    * Removed /etc/sysconfig/ha/example_script, as equal example is
+    already in /usr/share/doc/piranha/docs/script_templates/*
+    * Update httpd's modules, use libphp5 (instead of libphp4)
+    * add condrestart to pulse.init
+    * add status and condrestart to piranha-gui.init
+    * piranha-gui now checks for php5 modules
+    * Changed group ownership of /etc/sysconfig/ha to root
+    (except /etc/sysconfig/ha/lvs.cf)
+
+2006-06-12  Stanko Kupcevic <kupcevic@redhat.com> 0.8.4
+    * Fixed bz191787 - monitor script hangs
+
+2006-05-15  Stanko Kupcevic <kupcevic@redhat.com> 0.8.3
+    * Document send_program in lvs.cf manpage (bz190022)
+    * Fix lvsd where it segfaults when nanny dies (bz176913)
+
+2006-01-11  Lon Hohberger <lhh@redhat.com> 0.8.2
+    * Fix DOS-mangled config file problem
+    * Fix memory leak in nanny.c 
+    * Check expect_str before trying to regcomp it, fixing
+      a segfault in nanny.c
+
+2005-07-29  Lon Hohberger <lhh@redhat.com> piranha 0.8.1
+    * add link-level NIC monitoring
+
+2005-02-06  Lon Hohberger <lhh@redhat.com> piranha 0.8.0
+    * rename 'lvs' to 'lvsd' so as not to conflict with LVM2 tools
+    * tons of bugfixes WRT php warnings/errors
+
+2004-10-27  Lon Hohberger <lhh@redhat.com> piranha 0.7.8
+    * add support for active/inactive commands (patch from
+    Sébastien Bonnet)
+
+2004-09-02  Lon Hohberger <lhh@redhat.com> piranha-0.7.7
+    * fix for #73074 - nanny crashing if no load_monitor specified
+    * fix for #112016 - pulse fails to start if backup name not
+    specified
+    * fix for #123342 - the VIP doesnt come up, where the first
+    service deactivated
+    * fix for #131309 - Piranha/LVS master interface detection failure
+
+2003-08-25  Mike McLean <mikem@redhat.com> piranha-0.7.6
+    * beta release
+    * fixed routing table display in piranha-gui (bug#102481)
+    * fixed display of daemon status in piranha-gui
+    * fixed bug#60682 - piranha-gui monitoring screen too wide
+
+2003-07-31  Mike McLean <mikem@redhat.com> piranha-0.7.5
+    * beta release
+    * fixed piranha-gui on platforms that use lib64 (bug#100740)
+
+2003-07-10  Mike McLean <mikem@redhat.com> piranha-0.7.4
+    * beta release
+    * finished port of piranha_gui from php3 to php4
+    * removed fos from piranha_gui
+    * regex support for expect_string
+
+2003-04-03  Mike Mclean <mikem@redhat.com> piranha-0.7.3
+    * alpha release
+    * preliminary port of piranha-gui from php3 to php4
+    * piranha-gui's httpd.conf brought up to speed for httpd-2.0
+
+2002-10-14  Mike McLean <mikem@redhat.com>
+    * Fixed fos send_program support (bug#73073)
+    * Converted php short tags to long tags
+    * Converted sys_errlist[] to strerror()
+    * Fixed bug#73074 (nanny crashing when no load_monitor specified)
+
+2001-11-26  Philip Copeland <bryce@redhat.com>
+   * Added in Wensongs quiece patchs and updated the web tooling
+     so that it also knows about the option
+
+2001-11-21  Philip Copeland <bryce@redhat.com>
+    * Various code tidyups
+    * fixed up the Makefile to NOT mysteriously edit
+      /etc/httpd/conf/httpd.conf
+
+2001-10-10  Tim Waugh <twaugh@redhat.com>
+    * Multipath heartbeat: Always check sock_priv before using it.
+
+2001-09-28  Philip Copeland <bryce@redhat.com>
+    * Updated to provide a mechanism to allow
+      the use of an external script instead of a send string
+      should be useful for quite a few situations
+
+2001-08-27  Philip Copeland <bryce@redhat.com>
+    * Merged in Wensongs fwmark changes
+    * Updated the webtool to reflect new fwmark code
+    * Moved piranah-passwd to /usr/sbin
+    * Updated documentation
+    * Massively updated the spec file so that you can build
+      both standalone and in the rpm build enviroment
+    * Tidied up the spec file so that rpm -V should be almost
+      silent except perhaps for lvs.cf if it previously existed
+      (correct behaviour)
+
+2001-08-02  Philip Copeland <bryce@redhat.com>
+    * spec file keeps missing off the modules -> /usr/lib/apache link
+      added explicit rule in %files
+
+2001-07-03  Tim Waugh <twaugh@redhat.com>
+    * Added support for a dedicated heartbeat interface
+    * Added support for shared SCSI
+
+2001-07-24  Philip Copeland <bryce@redhat.com>
+    * Directives from der Boss, we must be able to run rpm -V successfully
+    * Collapsed piranha piranha-gui piranha-docs into a single rpm  
+
+2001-05-31  Keith Barrett <kbarrett@redhat.com>
+    * Changed parser to ignore \r as a line terminator
+    * Corrected netmask logic so it does not ref gethost call and is only
+      used when value is non-zero.
+    * Added netmask error code and return string
+    * Fixed pulse's use of netmasks in ifconfig and sendarp calls
+    * Put missing "if debug" blocks around debug output
+    * If using FOS, assume active if no backup node specified in lvs.cf
+    * Correct inconsistent use of --test-start, --nofork, --nodaemon, and
+      --norun between pulse, nanny, fos, and lvs. Updated man pages too.
+    * Removed ipvsadm build from Makefile
+    * piranha requires ipvsadm 1.17+
+    * parser now handles trailing \r chars (customer problem)
+    * Fixed default behavior for missing primary/backup ip addresses
+    * bumped version
+
+2001-05-24  Keith Barrett <kbarrett@redhat.com>
+    * Created documentation sub-system and updated all docs
+    * Created GUI links to documentation
+
+2001-05-21  Keith Barrett <kbarrett@redhat.com>
+    * Updated authors, README
+    * Created piranha-guide html book
+
+2001-05-16  Keith Barrett <kbarrett@redhat.com>
+    * Fixed piranha gui startup script and security
+    * Updated spec file to include piranha gui changes
+    * Updated gui error screen with correct security info
+
+2001-05-15  Keith Barrett <kbarrett@redhat.com>
+    * Removed ipvsadm build in piranha RPM
+    * Removed old X gui from CVS tree
+    * Used /var/log/piranha instead of /etc/sysconfig/ha/logs
+    * Cleaned up 7.x installation
+
+2001-05-14  Keith Barrett <kbarrett@redhat.com>
+    * Moved lvs.cf and password scripts to /etc/sysconfig/ha/lvs.cf in
+      Makefile, lvs.cf.5, README, piranha.spec.in, and pulse.init
+    * Merged Bryce's previous changed in
+    * Changed nobody to apache if exists
+    * Relocate existing lvs.cf file if appropriate
+
+2001-05-11  Keith Barrett <kbarrett@redhat.com>
+    * included vip_nmask, nat_nmask, info in sample.cf and lvf.cf.5
+
+2001-05-10  Keith Barrett <kbarrett@redhat.com>
+    * updated send_arp
+    * created send_arp man page. Updated other man pages to
+      include it.
+
+2001-05-07  Keith Barrett <kbarrett@redhat.com>
+    * Fix nanny file descriptor leak
+    * Fix LoadCommand=none test in nanny
+    * Added include for time.h in nanny
+
+2000-10-20  Philip Copeland <copeland@redhat.com>
+    * Fixed the piranha-passwd script to be a bit more
+      intelligent for people with customised httpd.conf files
+    * Fixed piranha.spec.in to copy the web files into the
+      correct place. the last build put them in
+      html/piranha/html instead of html/piranha
+    * bounced version up to -5
+
+2000-09-25  Philip Copeland <copeland@redhat.com>
+    * Added in the broadcast to be silently calculated in
+      sendArps() 
+    * Fixed the permissions for piranha-passwd.sh
+    * Various code cleanups
+
+2000-09-18  Philip Copeland <copeland@redhat.com>
+    * Finished off the netmask addidtions and back ported
+      from the 0.5.X tree
+    * Fixed up stupid error of least connections being
+      called as pcc instead of lc
+    * Various other fixups
+
+2000-08-28  Philip Copeland <copeland@redhat.com>
+    * piranha-0.4.16-7
+    * Added feature that allows setting of netmask
+    * Added broadcast directive
+    * added load monitoring 'none'
+
+2000-08-17  Keith Barrett <kbarrett@redhat.com>
+    * piranha-0.4.16-4.src.rpm released (experiemental beta)
+
+2000-08-17  Lars Kellogg-Stedman <lars@larsshack.org>
+    * size variable not initialized in heartbeat
+
+2000-08-16  Keith Moore <keith.moore@renp.com>
+    * Fix memory usage for persistence timeout parameter
+
+2000-08-01  Keith Barrett <kbarrett@redhat.com>
+    * Added -v to lvs. Bumped version due to new cvs tag
+
+2000-07-28  Keith Barrett <kbarrett@redhat.com>
+    * Updated how to docs
+    * piranaha-0.4.16-3 RPMs released (official upgrade)
+
+2000-07-26  Philip Copeland <copeland@redhat.com>
+    * removed annoying p lvs.ps not found message
+
+2000-07-20  Keith Barrett <kbarrett@redhat.com>
+    * Corrected UDP logic. Added --version.
+
+2000-06-19  Philip Copeland <copeland@redhat.com>
+    * Wensongs documentation added
+
+2000-06-19  Philip Copeland <copeland@redhat.com>
+    * Removed ipvsadm from piranha's src tree
+    * ipvsadm-1.11 is now a dependancy
+    * Made cvs tag for with-own-ipvs before committing
+      the above changes
+
+2000-06018  Keith Barrett <kbarrett@redhat.com>
+    * Added heartbeat debug logic
+
+2000-06-12  Keith Barrett <kbarrett@redhat.com>
+    * Updated doc files
+
+2000-06-06  Philip Copeland <copeland@redhat.com>
+    * Minor eyecandy tidyup
+    * Updated the error messages for a not so uncommon
+      situation regarding groups
+
+2000-05-31  Philip Copeland <copeland@redhat.com>
+    * Various window dressing and tidyups
+
+2000-04-26  Philip Copeland <copeland@redhat.com>
+    * The design of the initial presentation of the package
+      has been changed so that it no longer lets people in
+      to play with the GUI without a password being entered.
+    * The password facility has been ripped out totally and now
+      becomes the system administrators responsibility to enable
+      before use of the GUI
+
+2000-04-23  Philip Copeland <copeland@redhat.com>
+    * Fixed security exposure in the gui passwd.php3 file
+    * Rebuilt packages and generated errata
+
+2000-03-05  Mike Wangsmo <wanger@redhat.com>
+    * added killapache to send a SIGKILL to httpd
+
+2000-02-29  Keith Barrett <kbarrett@redhat.com>
+    * Added failover services (fos.*) and fos changes to pulse
+
+2000-02-15  Keith Barrett <kbarrett@redhat.com>
+    * Added persistent netmask
+    * Added protocol = (tcp, udp) parsing
+    * Added routing methods tunnel,dr
+    * Updated doc files everywhere
+
+2000-02-14  Keith Barrett <kbarrett@redhat.com>
+    * added generic services to lvsconfig,  nanny.c and nanny.8
+
+2000-02-11  Mike Wangsmo <wanger@redhat.com>
+    * added uid/gid piranha to setup (233)
+
+2000-02-09  Philip Copeland <copeland@redhat.com>
+    * Added NAT/direct routing/tunneling to the web interface
+
+2000-02-07  Keith Barrett <kbarrett@redhat.com>
+    * Changed pulse call to send_arp to /usr/sbin
+
+2000-02-04  Phil "Bryce" Copeland <copeland@redhat.com>
+    * Added web GUI system
+
+1999-09-25  Mike Wangsmo <wanger@redhat.com>
+    * added the HOWTO
+
+1999-09-24  Mike Wangsmo <wanger@redhat.com>
+    * added KDE desktop entry
+    * fixed *tons* of lvs <-> gui glue problems
+
+1999-09-21  Mike Wangsmo <wanger@redhat.com>
+    * added a send_arp tool to the package
+    * added nanny to package
+    * added pulse init script
+
+1999-09-09  Mike Wangsmo <wanger@redhat.com>
+    * added the documents package
+
+1999-07-25  Mike Wangsmo <wanger@redhat.com>
+    * initial build

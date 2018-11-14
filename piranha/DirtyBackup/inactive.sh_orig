@@ -1,0 +1,64 @@
+#!/bin/sh
+lockdir=/tmp/inactive.lock
+mkdir "${lockdir}" > /dev/null
+ret=$?
+if [ $ret == 0 ]; then
+  echo "Locking succeeded" >> /tmp/hanodestate.log
+  trap 'rm -rf "$lockdir"; exit $?' INT TERM EXIT
+else
+  echo "Lock failed. Inactive Script Already Running exiting." >> /tmp/hanodestate.log
+  exit 1
+fi
+
+echo `date` ":Inactive Script Started." >> /tmp/hanodestate.log
+
+DEADTIMEOUT=`awk 'BEGIN{DEADTIME="NONE";gotoloop=0;} {if($1=="deadtime"){DEADTIME=$3}} END{printf("DeadtimeOut=%s",DEADTIME) > "/tmp/ipaddr";print DEADTIME;}' /etc/sysconfig/ha/lvs.cf`
+
+echo "Inactive Going In Sleep for $DEADTIMEOUT secs." >> /tmp/hanodestate.log
+sleep $DEADTIMEOUT
+
+pgrep commDemon
+if [ $? != 0 ]; then
+	pkill commDemon
+	rm -rf /home/fes/commDemon.txt
+	/home/fes/commDemon
+fi
+
+VIPADDRESS=`awk 'BEGIN{VIPADDRS="NONE";gotoloop=0;} {if($1== "virtual" ){if(gotoloop ==  0 ){gotoloop=1;} else{gotoloop=0;}} if(gotoloop == 1) { if ($1=="address"){VIPADDRS=$3;gotoloop=0;}} }END{printf("VIPADDRESS=%s",VIPADDRS) > "/tmp/ipaddr";print VIPADDRS;}' /etc/sysconfig/ha/lvs.cf`
+
+echo "Flushing ARP tables For Virtual IP Entry." >> /tmp/hanodestate.log
+
+/etc/init.d/arptables_jf stop >>/tmp/hanodestate.log
+/usr/sbin/arptables-noarp-addr $VIPADDRESS start >>/tmp/hanodestate.log
+/etc/init.d/arptables_jf save  >>/tmp/hanodestate.log
+/sbin/chkconfig --level 2345 arptables_jf on  >>/tmp/hanodestate.log
+/etc/init.d/arptables_jf start  >>/tmp/hanodestate.log
+
+echo "Stopping local database service." >> /tmp/hanodestate.log
+/sbin/service mysqld stop
+
+echo ":Removing temp files." >> /tmp/hanodestate.log
+rm -rf /tmp/ipaddr
+
+echo "Stopping InfoAgent and FileSync" >> /tmp/hanodestate.log
+/home/fes/SyncBinary Kill
+
+sleep 7
+
+echo "Clearing IP tables" >> /tmp/hanodestate.log
+iptables -t nat -F
+
+echo "Starting InfoAgent and FileSync" >> /tmp/hanodestate.log
+rm -rf /home/fes/filesync.conf
+
+/home/fes/SyncBinary InActive
+
+service piranha-gui stop
+
+echo "All serivces started fine." >> /tmp/hanodestate.log
+
+echo `date` ":Inactive command completed [VIP $VIPADDRESS]" >> /tmp/hanodestate.log
+rm -rf "$lockdir"
+
+exit 0
+

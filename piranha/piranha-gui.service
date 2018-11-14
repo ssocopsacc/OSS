@@ -1,0 +1,16 @@
+[Unit]
+Description=piranha gui is used to start multiprocess web server for HA pages configuration
+After=network.target
+
+[Service]
+Type=forking
+ExecStartPre=ls /etc/sysconfig/ha/modules/libphp5.so
+ExecStart=/usr/sbin/piranha_gui -f /etc/sysconfig/ha/conf/httpd.conf
+ExecStartPost=touch /var/lock/subsys/piranha-gui
+ExecStop=/usr/bin/pkill piranha_gui
+ExecStopPost=rm -f /var/log/piranha/piranha-httpd.pid; rm -f /var/lock/subsys/piranha-gui
+RestartSec=1
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

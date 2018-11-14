@@ -1,0 +1,13 @@
+%dir /usr/lib/debug
+%dir /usr/lib/debug/etc
+%dir /usr/lib/debug/etc/sysconfig
+%dir /usr/lib/debug/etc/sysconfig/ha
+%dir /usr/lib/debug/usr
+%dir /usr/lib/debug/usr/sbin
+/usr/lib/debug/etc/sysconfig/ha/infoAgent.debug
+/usr/lib/debug/usr/sbin/pulse.debug
+/usr/lib/debug/usr/sbin/lvsd.debug
+/usr/lib/debug/usr/sbin/nanny.debug
+/usr/lib/debug/usr/sbin/send_arp.debug
+/usr/lib/debug/usr/sbin/fos.debug
+/usr/src/debug/piranha

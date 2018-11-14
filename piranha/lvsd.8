@@ -1,0 +1,49 @@
+LVS 8 "Thu Feb 03 2005" 
+4
+NAME
+lvsd - daemon to control the Red Hat clustering services. 
+SYNOPSIS
+lvsd [-c cfgfile|--configfile=cfgfile] [-n|--nodaemon]
+[--nofork] [-t|--test-start] [-?|--help] [--usage] [--version]
+DESCRIPTION
+lvsd reads in the cluster configuration file lvs.cf, calls 
+ipvsadm to maintain the IPVS routing table, and nanny to perform 
+monitoring services.
+
+lvsd is normally started by pulse although it can be run as a command line
+tool. Similarly, the configuration file that tells lvsd what to do is normally
+edited by piranha, but it can be manually edited.
+
+All activity from lvsd is logged to syslog (when lvsd is
+running as a daemon).
+OPTIONS
+
+"-c "cfgfile "|--configfile=" cfgfile
+Normally, lvsd uses lvs.cf as its configuration file, but this
+can be overridden and another file can be used.
+"-n|--nodaemon"
+Normally, lvsd runs as a daemon, however using this option, lvsd
+runs in the foreground.  When running in this mode, all its output is sent to
+STDOUT instead of syslog.
+"--nofork"
+Don't fork, but do perform disassociate.
+"-t|--test-start"
+Running lvsd is test mode allows the user to monitor what lvsd would
+actually do.  This is only useful during debugging.
+"-?|--help"
+Shows a verbose usage listing.
+"--usage"
+Outputs a terse argument summary.
+"--version"
+Displays program version.
+
+SEE ALSO
+ ipvsadm (8)
+ lvs.cf (5)
+ nanny (8)
+ pulse (8)
+ send_arp (8)
+
+ AUTHOR
+
+Erik Troan <ewt@redhat.com>
